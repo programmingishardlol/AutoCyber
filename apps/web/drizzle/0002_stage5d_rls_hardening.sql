@@ -1,0 +1,25 @@
+alter table public.users enable row level security;
+alter table public.teams enable row level security;
+alter table public.team_memberships enable row level security;
+alter table public.projects enable row level security;
+alter table public.repositories enable row level security;
+alter table public.scan_jobs enable row level security;
+alter table public.findings enable row level security;
+alter table public.fix_proposals enable row level security;
+alter table public.verification_results enable row level security;
+alter table public.pull_requests enable row level security;
+alter table public.audit_logs enable row level security;
+alter table public.security_memories enable row level security;
+
+revoke all on table public.users from anon, authenticated;
+revoke all on table public.teams from anon, authenticated;
+revoke all on table public.team_memberships from anon, authenticated;
+revoke all on table public.projects from anon, authenticated;
+revoke all on table public.repositories from anon, authenticated;
+revoke all on table public.scan_jobs from anon, authenticated;
+revoke all on table public.findings from anon, authenticated;
+revoke all on table public.fix_proposals from anon, authenticated;
+revoke all on table public.verification_results from anon, authenticated;
+revoke all on table public.pull_requests from anon, authenticated;
+revoke all on table public.audit_logs from anon, authenticated;
+revoke all on table public.security_memories from anon, authenticated;

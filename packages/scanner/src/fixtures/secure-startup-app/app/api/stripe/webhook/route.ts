@@ -1,0 +1,12 @@
+import Stripe from "stripe";
+import { NextResponse } from "next/server";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
+
+export async function POST(request: Request) {
+  const signature = request.headers.get("stripe-signature");
+  const body = await request.text();
+  const event = stripe.webhooks.constructEvent(body, signature ?? "", process.env.STRIPE_WEBHOOK_SECRET ?? "");
+
+  return NextResponse.json({ received: event.type });
+}

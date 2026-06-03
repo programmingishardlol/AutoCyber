@@ -1,0 +1,12 @@
+{
+  "name": "insecure-startup-app",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.0.0",
+    "@anthropic-ai/sdk": "^0.32.0",
+    "next": "^15.0.0",
+    "openai": "^4.0.0",
+    "cors": "^2.8.5",
+    "stripe": "^17.0.0"
+  }
+}

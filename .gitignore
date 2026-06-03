@@ -1,0 +1,20 @@
+.DS_Store
+node_modules
+.turbo
+.next
+dist
+coverage
+*.tsbuildinfo
+
+# Private project notes and agent instructions.
+# Keep README.md public, but do not publish local planning/context docs.
+*.md
+!README.md
+
+# Environment files. .env.example is intentionally safe to publish because
+# it contains empty placeholders only.
+.env
+.env.*
+.env.local
+.env.*.local
+!.env.example
