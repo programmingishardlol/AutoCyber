@@ -1,0 +1,296 @@
+import { createLocalScanner, type ScannerResult } from "@autocyber/scanner";
+import type { NotificationType, Repository, ScanJob, Severity } from "@autocyber/core";
+import { GitHubAppAuthError } from "./github-app-auth";
+import { clonePublicGitHubRepository, GitHubIngestionError } from "./github-ingestion";
+import { cloneGitHubRepositoryWithInstallationToken } from "./github-private-ingestion";
+import type { PersistenceStore } from "./persistence/store";
+
+type FindingSummary = ScanJob["summary"];
+
+export interface EnqueueScanJobInput {
+  repositoryId: string;
+  source: ScanJob["source"];
+  branch: string;
+  commitSha: string;
+  webhookDeliveryId?: string | null;
+  pullRequestNumber?: number | null;
+}
+
+export interface ProcessScanJobOptions {
+  scanRepositoryPath?: (repositoryPath: string, repositoryId: string, scanJobId: string) => Promise<ScannerResult>;
+  fetchPrivateGitHubRepository?: (input: {
+    repository: Repository;
+    scan(repositoryPath: string): Promise<ScannerResult>;
+  }) => Promise<ScannerResult>;
+}
+
+export type ProcessScanJobResult =
+  | { status: "completed"; scanJobId: string; findings: number }
+  | { status: "failed"; scanJobId: string; error: string };
+
+const safeMonitoringScanError = "AutoCyber could not complete the monitoring scan.";
+
+export async function enqueueScanJob(store: PersistenceStore, input: EnqueueScanJobInput): Promise<ScanJob> {
+  return store.createScanJob({
+    repositoryId: input.repositoryId,
+    source: input.source,
+    branch: input.branch,
+    commitSha: input.commitSha,
+    webhookDeliveryId: input.webhookDeliveryId ?? null,
+    pullRequestNumber: input.pullRequestNumber ?? null,
+    status: "queued"
+  });
+}
+
+export async function processScanJob(
+  store: PersistenceStore,
+  scanJobId: string,
+  options: ProcessScanJobOptions = {}
+): Promise<ProcessScanJobResult> {
+  const scanJob = await store.getScanJob(scanJobId);
+  if (!scanJob) {
+    return {
+      status: "failed",
+      scanJobId,
+      error: "Scan job was not found."
+    };
+  }
+
+  const repository = await store.getRepository(scanJob.repositoryId);
+  if (!repository) {
+    await store.failScanJob(scanJob.id, "Repository was not found for this monitoring scan.");
+    await store.writeAuditLog("monitoring_scan_failed", "scan_job", scanJob.id);
+    return {
+      status: "failed",
+      scanJobId: scanJob.id,
+      error: "Repository was not found for this monitoring scan."
+    };
+  }
+
+  await store.markScanJobRunning(scanJob.id);
+  await store.writeAuditLog("monitoring_scan_started", "scan_job", scanJob.id);
+
+  try {
+    const result = await runScannerForRepository(scanJob, repository, options);
+    await store.saveFindings(result.findings);
+    await store.upsertRepoProfileMemory(result.repositoryId, result.projectProfile);
+    await store.completeScanJob(result.scanJobId, summarizeFindings(result.findings));
+    await store.writeAuditLog("monitoring_scan_completed", "scan_job", scanJob.id);
+    await createCompletionNotifications(store, scanJob, repository, result.findings);
+
+    return {
+      status: "completed",
+      scanJobId: scanJob.id,
+      findings: result.findings.length
+    };
+  } catch (error) {
+    const message = error instanceof GitHubIngestionError || error instanceof GitHubAppAuthError ? error.message : safeMonitoringScanError;
+    await store.failScanJob(scanJob.id, message);
+    await store.writeAuditLog("monitoring_scan_failed", "scan_job", scanJob.id);
+    await createFailureNotifications(store, scanJob, repository, message);
+
+    return {
+      status: "failed",
+      scanJobId: scanJob.id,
+      error: message
+    };
+  }
+}
+
+async function createFailureNotifications(
+  store: PersistenceStore,
+  scanJob: ScanJob,
+  repository: Repository,
+  message: string
+): Promise<void> {
+  await store.createNotification({
+    repositoryId: repository.id,
+    scanJobId: scanJob.id,
+    findingId: null,
+    type: "scan_failed",
+    severity: "high",
+    title: "Monitoring scan failed",
+    message: sanitizeNotificationText(`AutoCyber could not complete a ${scanJob.source} monitoring scan for ${repository.owner}/${repository.name}. ${message}`)
+  });
+
+  if (message === "Private repository scanning requires GitHub App installation.") {
+    await store.createNotification({
+      repositoryId: repository.id,
+      scanJobId: scanJob.id,
+      findingId: null,
+      type: "private_repo_fetch_failed",
+      severity: "high",
+      title: "Private repository fetch failed",
+      message: "Private repository scanning requires GitHub App installation before AutoCyber can fetch the repository for monitoring."
+    });
+  }
+}
+
+async function createCompletionNotifications(
+  store: PersistenceStore,
+  scanJob: ScanJob,
+  repository: Repository,
+  findings: ScannerResult["findings"]
+): Promise<void> {
+  if (scanJob.source === "pull_request") {
+    await store.createNotification({
+      repositoryId: repository.id,
+      scanJobId: scanJob.id,
+      findingId: null,
+      type: "pull_request_scan_completed",
+      severity: "info",
+      title: "Pull request scan completed",
+      message: sanitizeNotificationText(`AutoCyber completed a pull request scan for ${repository.owner}/${repository.name} on ${scanJob.branch}.`)
+    });
+  } else if (scanJob.source === "push") {
+    await store.createNotification({
+      repositoryId: repository.id,
+      scanJobId: scanJob.id,
+      findingId: null,
+      type: "webhook_scan_completed",
+      severity: "info",
+      title: "Webhook scan completed",
+      message: sanitizeNotificationText(`AutoCyber completed a push-triggered scan for ${repository.owner}/${repository.name} on ${scanJob.branch}.`)
+    });
+  }
+
+  const actionableFindings = findings.filter((finding) => finding.severity === "medium" || finding.severity === "high" || finding.severity === "critical");
+  if (actionableFindings.length > 0) {
+    await store.createNotification({
+      repositoryId: repository.id,
+      scanJobId: scanJob.id,
+      findingId: null,
+      type: "new_findings_detected",
+      severity: highestSeverity(actionableFindings),
+      title: "New actionable findings detected",
+      message: `${actionableFindings.length} medium or higher severity finding${actionableFindings.length === 1 ? "" : "s"} were detected in the latest monitoring scan.`
+    });
+  }
+
+  for (const finding of findings) {
+    if (finding.severity === "high") {
+      await createFindingNotification(store, repository, scanJob, finding, "high_severity_finding_detected");
+    }
+    if (finding.severity === "critical") {
+      await createFindingNotification(store, repository, scanJob, finding, "critical_finding_detected");
+    }
+  }
+}
+
+async function createFindingNotification(
+  store: PersistenceStore,
+  repository: Repository,
+  scanJob: ScanJob,
+  finding: ScannerResult["findings"][number],
+  type: NotificationType
+): Promise<void> {
+  await store.createNotification({
+    repositoryId: repository.id,
+    scanJobId: scanJob.id,
+    findingId: finding.id,
+    type,
+    severity: finding.severity,
+    title: finding.severity === "critical" ? "Critical finding detected" : "High severity finding detected",
+    message: sanitizeNotificationText(`${finding.title} in ${repository.owner}/${repository.name} at ${finding.affectedFile}.`)
+  });
+}
+
+function highestSeverity(findings: ScannerResult["findings"]): Severity {
+  if (findings.some((finding) => finding.severity === "critical")) return "critical";
+  if (findings.some((finding) => finding.severity === "high")) return "high";
+  if (findings.some((finding) => finding.severity === "medium")) return "medium";
+  return "info";
+}
+
+function sanitizeNotificationText(value: string): string {
+  return value
+    .replace(/postgres(?:ql)?:\/\/\S+/gi, "[REDACTED_DB_URL]")
+    .replace(/github_pat_[A-Za-z0-9_]+/g, "github_pat_[REDACTED]")
+    .replace(/\bgh[opsu]_[A-Za-z0-9_]+\b/g, "gh_[REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "sk-[REDACTED]")
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]");
+}
+
+export async function retryScanJob(store: PersistenceStore, scanJobId: string): Promise<ScanJob> {
+  const scanJob = await store.getScanJob(scanJobId);
+  if (!scanJob) {
+    throw new Error("Scan job was not found.");
+  }
+
+  if (scanJob.status !== "failed") {
+    throw new Error("Only failed scan jobs can be retried.");
+  }
+
+  const retry = await enqueueScanJob(store, {
+    repositoryId: scanJob.repositoryId,
+    source: scanJob.source,
+    branch: scanJob.branch,
+    commitSha: scanJob.commitSha,
+    webhookDeliveryId: null,
+    pullRequestNumber: scanJob.pullRequestNumber
+  });
+  await store.writeAuditLog("scan_retry_queued", "scan_job", retry.id);
+  return retry;
+}
+
+async function runScannerForRepository(
+  scanJob: ScanJob,
+  repository: Repository,
+  options: ProcessScanJobOptions
+): Promise<ScannerResult> {
+  const scanRepositoryPath = options.scanRepositoryPath ?? defaultScanRepositoryPath;
+
+  if (repository.provider === "local") {
+    return scanRepositoryPath(repository.url, repository.id, scanJob.id);
+  }
+
+  if (repository.isPrivate) {
+    if (!repository.installationId) {
+      throw new GitHubIngestionError("private_repo_requires_installation", "Private repository scanning requires GitHub App installation.");
+    }
+
+    const fetchPrivateGitHubRepository = options.fetchPrivateGitHubRepository ?? defaultFetchPrivateGitHubRepository;
+    return fetchPrivateGitHubRepository({
+      repository,
+      scan: (repositoryPath) => scanRepositoryPath(repositoryPath, repository.id, scanJob.id)
+    });
+  }
+
+  if (process.env.AUTOCYBER_TEST_GITHUB_CLONE_PATH) {
+    return scanRepositoryPath(process.env.AUTOCYBER_TEST_GITHUB_CLONE_PATH, repository.id, scanJob.id);
+  }
+
+  return clonePublicGitHubRepository({
+    repoUrl: repository.url,
+    scan: (repositoryPath) => scanRepositoryPath(repositoryPath, repository.id, scanJob.id)
+  });
+}
+
+async function defaultFetchPrivateGitHubRepository(input: {
+  repository: Repository;
+  scan(repositoryPath: string): Promise<ScannerResult>;
+}): Promise<ScannerResult> {
+  return cloneGitHubRepositoryWithInstallationToken({
+    repoUrl: input.repository.url,
+    installationId: input.repository.installationId!,
+    scan: input.scan
+  });
+}
+
+async function defaultScanRepositoryPath(repositoryPath: string, repositoryId: string, scanJobId: string): Promise<ScannerResult> {
+  return createLocalScanner().scan({
+    repositoryPath,
+    repositoryId,
+    scanJobId
+  });
+}
+
+function summarizeFindings(findings: ScannerResult["findings"]): FindingSummary {
+  return findings.reduce(
+    (summary, finding) => {
+      summary[finding.severity] += 1;
+      return summary;
+    },
+    { critical: 0, high: 0, medium: 0, low: 0, info: 0 }
+  );
+}

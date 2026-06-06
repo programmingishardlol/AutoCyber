@@ -10,9 +10,12 @@ const fixturesRoot = join(
   "../fixtures",
 );
 const vulnerableStartupStackEnv = [
-  "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY=stage5service000000000000000000000000",
-  "STRIPE_SECRET_KEY=sk_live_stage5stripe000000000000000000000000",
-  "OPENAI_API_KEY=sk-proj-stage5openai000000000000000000000000",
+  envLine(
+    "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY",
+    "stage5service000000000000000000000000",
+  ),
+  envLine("STRIPE_SECRET_KEY", fakeStripeLiveKey("stage5stripe")),
+  envLine("OPENAI_API_KEY", fakeOpenAiKey("stage5openai")),
 ].join("\n");
 
 describe("Stage 5A startup-stack scanner rules", () => {
@@ -140,4 +143,16 @@ async function createFixtureCopy(
   }
 
   return repositoryPath;
+}
+
+function envLine(name: string, value: string): string {
+  return `${name}=${value}`;
+}
+
+function fakeStripeLiveKey(label: string): string {
+  return ["sk", "live", `${label}000000000000000000000000`].join("_");
+}
+
+function fakeOpenAiKey(label: string): string {
+  return ["sk", "proj", `${label}000000000000000000000000`].join("-");
 }

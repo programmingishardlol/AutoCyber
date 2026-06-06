@@ -29,7 +29,7 @@ export default async function ScannerPage({ searchParams }: { searchParams: Sear
     <div className="space-y-6">
       <PageHeader
         title="Repo scanner"
-        description="Run the scanner against a local development path or a public GitHub repository URL. Private GitHub scans require the future GitHub App flow."
+        description="Run the scanner against a local development path or a public GitHub repository URL. Private GitHub monitoring requires a GitHub App connection."
       />
 
       <section className="rounded-lg border border-border bg-white p-6 shadow-surface">

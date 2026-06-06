@@ -31,6 +31,15 @@ export type VerificationStatus = "not_started" | "running" | "passed" | "failed"
 export type PullRequestStatus = "not_created" | "draft" | "open" | "merged" | "closed";
 
 export type IntegrationStatus = "not_connected" | "connected" | "needs_attention";
+export type NotificationStatus = "unread" | "read" | "dismissed";
+export type NotificationType =
+  | "scan_failed"
+  | "private_repo_fetch_failed"
+  | "high_severity_finding_detected"
+  | "critical_finding_detected"
+  | "pull_request_scan_completed"
+  | "webhook_scan_completed"
+  | "new_findings_detected";
 
 export type StackTag =
   | "nextjs"
@@ -84,6 +93,13 @@ export interface Repository {
   name: string;
   defaultBranch: string;
   url: string;
+  installationId: string | null;
+  isPrivate: boolean;
+  connectionType: "local" | "public_github" | "github_app" | "token_dev";
+  canScan: boolean;
+  canMonitor: boolean;
+  canOpenPr: boolean;
+  permissionsSummary: Record<string, string | boolean | null>;
   lastScannedAt: ISODateTime | null;
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
@@ -96,6 +112,9 @@ export interface ScanJob {
   source: "manual" | "push" | "pull_request" | "scheduled";
   branch: string;
   commitSha: string;
+  webhookDeliveryId: string | null;
+  pullRequestNumber: number | null;
+  error: string | null;
   startedAt: ISODateTime | null;
   completedAt: ISODateTime | null;
   summary: {
@@ -219,6 +238,21 @@ export interface AuditLog {
   targetType: string;
   targetId: ID;
   createdAt: ISODateTime;
+}
+
+export interface Notification {
+  id: ID;
+  teamId: ID;
+  repositoryId: ID;
+  scanJobId: ID | null;
+  findingId: ID | null;
+  type: NotificationType;
+  severity: Severity;
+  title: string;
+  message: string;
+  status: NotificationStatus;
+  createdAt: ISODateTime;
+  updatedAt: ISODateTime;
 }
 
 export interface DashboardSummary {

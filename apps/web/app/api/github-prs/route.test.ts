@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { POST } from "./route";
 import type { FixProposal } from "@autocyber/core";
 import type { LocalRemediationExecution } from "@autocyber/remediation";
+import { getPersistenceStore } from "../../../lib/persistence/store";
 
 const proposal: FixProposal = {
   id: "fix_headers",
@@ -43,6 +44,10 @@ const execution: LocalRemediationExecution = {
 };
 
 describe("GitHub PR API route", () => {
+  beforeEach(() => {
+    globalThis.__autocyberPersistenceStore = undefined;
+  });
+
   it("returns a safe error when the GitHub token is not configured", async () => {
     const originalToken = process.env.GITHUB_TOKEN;
     const originalFineGrainedToken = process.env.GITHUB_FINE_GRAINED_TOKEN;
@@ -188,5 +193,43 @@ describe("GitHub PR API route", () => {
     expect(response.status).toBe(400);
     expect(body.error).toBe("GitHub PR blocked");
     expect(body.message).toBe("Local verification must pass before creating a GitHub PR.");
+  });
+
+  it("blocks public GitHub repository PR creation until write access is connected", async () => {
+    await getPersistenceStore().upsertRepository({
+      projectId: "proj_dev",
+      provider: "github",
+      owner: "example",
+      name: "public-app",
+      defaultBranch: "main",
+      url: "https://github.com/example/public-app",
+      connectionType: "public_github",
+      canScan: true,
+      canMonitor: false,
+      canOpenPr: false,
+      isPrivate: false
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/github-prs", {
+        method: "POST",
+        body: JSON.stringify({
+          proposal: { ...proposal, repositoryId: "repo_public" },
+          execution: { ...execution, repositoryId: "repo_public" },
+          target: {
+            owner: "example",
+            repo: "public-app",
+            defaultBranch: "main",
+            tokenMode: "token"
+          }
+        })
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body.error).toBe("GitHub connection required");
+    expect(body.message).toBe("Connect GitHub with PR permissions before AutoCyber can open a remediation PR.");
+    expect(JSON.stringify(body)).not.toContain("github_pat_");
   });
 });

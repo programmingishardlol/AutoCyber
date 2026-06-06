@@ -580,7 +580,8 @@ function FixProposalReview({
           />
         </div>
         <p className="mt-3 text-sm text-slate-600">
-          Requires server-side `GITHUB_TOKEN` with least-privilege contents and pull request permissions. AutoCyber never sends the token to the browser.
+          Requires a connected repository with PR remediation enabled, or server-side `GITHUB_TOKEN` token-dev mode with least-privilege contents and pull request permissions.
+          AutoCyber never sends credentials to the browser.
         </p>
         {isAdvisory ? (
           <p className="mt-3 text-sm font-medium text-orange-800">Advisory proposals cannot create GitHub PRs until a human supplies an applyable patch and local verification passes.</p>

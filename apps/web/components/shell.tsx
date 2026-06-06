@@ -1,4 +1,5 @@
 import {
+  Bell,
   Brain,
   CheckCircle2,
   FileWarning,
@@ -23,6 +24,7 @@ const navItems = [
   { href: "/repositories", label: "Repositories", icon: Radar },
   { href: "/scanner", label: "Repo scanner", icon: ScanSearch },
   { href: "/scans", label: "Scans", icon: ScanSearch },
+  { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/findings", label: "Findings", icon: FileWarning },
   { href: "/fix-proposals", label: "Fix proposals", icon: ListChecks },
   { href: "/verification", label: "Verification", icon: CheckCircle2 },
@@ -44,7 +46,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
             <div>
               <div className="font-semibold text-slate-950">AutoCyber</div>
-              <div className="text-xs text-slate-500">Stage 5D infrastructure</div>
+              <div className="text-xs text-slate-500">Stage 6E notification stubs</div>
             </div>
           </div>
           <div className="mt-4">

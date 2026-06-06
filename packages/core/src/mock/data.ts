@@ -61,6 +61,16 @@ export const mockRepositories: Repository[] = [
     name: "launchpad-web",
     defaultBranch: "main",
     url: "https://github.com/earlybyte/launchpad-web",
+    installationId: "123456",
+    isPrivate: true,
+    connectionType: "github_app",
+    canScan: true,
+    canMonitor: true,
+    canOpenPr: true,
+    permissionsSummary: {
+      contents: "write",
+      pullRequests: "write"
+    },
     lastScannedAt: "2026-05-26T08:30:00.000Z",
     createdAt: now,
     updatedAt: now
@@ -73,6 +83,16 @@ export const mockRepositories: Repository[] = [
     name: "agentdesk-api",
     defaultBranch: "main",
     url: "https://github.com/earlybyte/agentdesk-api",
+    installationId: null,
+    isPrivate: false,
+    connectionType: "public_github",
+    canScan: true,
+    canMonitor: false,
+    canOpenPr: false,
+    permissionsSummary: {
+      contents: "public_read",
+      pullRequests: "none"
+    },
     lastScannedAt: "2026-05-25T18:15:00.000Z",
     createdAt: now,
     updatedAt: now
@@ -87,6 +107,9 @@ export const mockScanJobs: ScanJob[] = [
     source: "manual",
     branch: "main",
     commitSha: "9f83a2c",
+    webhookDeliveryId: null,
+    pullRequestNumber: null,
+    error: null,
     startedAt: "2026-05-26T08:25:00.000Z",
     completedAt: "2026-05-26T08:30:00.000Z",
     summary: { critical: 0, high: 2, medium: 3, low: 1, info: 2 }
@@ -98,6 +121,9 @@ export const mockScanJobs: ScanJob[] = [
     source: "manual",
     branch: "main",
     commitSha: "1ca92bf",
+    webhookDeliveryId: null,
+    pullRequestNumber: null,
+    error: null,
     startedAt: "2026-05-25T18:10:00.000Z",
     completedAt: "2026-05-25T18:15:00.000Z",
     summary: { critical: 0, high: 1, medium: 2, low: 0, info: 1 }

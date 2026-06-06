@@ -2,11 +2,13 @@ import { Github, HardDrive, Lock } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 
 export default function NewRepositoryPage() {
+  const githubAppInstallUrl = process.env.GITHUB_APP_INSTALL_URL?.trim();
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Add repository"
-        description="Stage 5D repository onboarding for local development paths and public GitHub URL scans."
+        description="Connect a repository with the right access level for scanning, monitoring, and remediation PRs."
       />
 
       <div className="grid gap-5 lg:grid-cols-3">
@@ -37,7 +39,9 @@ export default function NewRepositoryPage() {
             <Github className="h-5 w-5 text-slate-700" aria-hidden="true" />
             <h2 className="font-semibold text-slate-950">Public GitHub URL</h2>
           </div>
-          <p className="mt-3 text-sm leading-6 text-slate-600">Clone a public repository into the scanner workdir, scan the temporary copy, then delete it.</p>
+          <p className="mt-3 text-sm leading-6 text-slate-600">
+            Scan a public repository without connecting GitHub. This grants read-only scan capability, not remediation PR access.
+          </p>
           <form action="/scanner" className="mt-5 space-y-3">
             <input type="hidden" name="source" value="github" />
             <label className="block text-sm font-medium text-slate-700">
@@ -52,15 +56,30 @@ export default function NewRepositoryPage() {
               Scan public repo
             </button>
           </form>
+          <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+            PR remediation is disabled for public URL scans until GitHub is connected with contents and pull request write permissions.
+          </p>
         </section>
 
-        <section className="rounded-lg border border-dashed border-border bg-slate-50 p-6">
+        <section className="rounded-lg border border-border bg-white p-6 shadow-surface">
           <div className="flex items-center gap-3">
-            <Lock className="h-5 w-5 text-slate-500" aria-hidden="true" />
-            <h2 className="font-semibold text-slate-950">Private GitHub</h2>
+            <Lock className="h-5 w-5 text-slate-700" aria-hidden="true" />
+            <h2 className="font-semibold text-slate-950">GitHub App</h2>
           </div>
           <p className="mt-3 text-sm leading-6 text-slate-600">
-            Private GitHub URL scans and GitHub App installation are coming in Stage 6. Stage 5D only supports public URL scans.
+            Install AutoCyber on selected repositories to enable private repo monitoring and PR remediation when the app has write permissions.
+          </p>
+          {githubAppInstallUrl ? (
+            <a href={githubAppInstallUrl} className="mt-5 inline-flex rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white">
+              Install AutoCyber GitHub App
+            </a>
+          ) : (
+            <div className="mt-5 inline-flex rounded-md border border-slate-200 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500">
+              GitHub App install URL not configured
+            </div>
+          )}
+          <p className="mt-4 text-xs leading-5 text-slate-500">
+            GitHub redirects back with an installation ID. AutoCyber stores repository metadata and capability flags, never the short-lived installation token.
           </p>
         </section>
       </div>

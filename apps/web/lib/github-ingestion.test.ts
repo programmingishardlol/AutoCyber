@@ -53,7 +53,7 @@ describe("public GitHub ingestion", () => {
       })
     ).rejects.toMatchObject({
       code: "unreachable_public_repo",
-      message: expect.stringContaining("Private GitHub URL scans")
+      message: expect.stringContaining("Private GitHub monitoring")
     });
   });
 });

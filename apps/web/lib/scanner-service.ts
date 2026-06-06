@@ -81,7 +81,14 @@ export async function runScan(input: ScanRequestInput): Promise<{ status: number
       owner: "local",
       name: basename(repositoryPath),
       defaultBranch: "local",
-      url: repositoryPath
+      url: repositoryPath,
+      connectionType: "local",
+      canScan: true,
+      canMonitor: false,
+      canOpenPr: false,
+      permissionsSummary: {
+        mode: "local_development"
+      }
     });
     const scanJobRecord = await store.createScanJob({
       repositoryId: repository.id,
@@ -152,7 +159,17 @@ async function runPublicGitHubScan(input: ScanRequestInput): Promise<{ status: n
     owner: locator.owner,
     name: locator.repo,
     defaultBranch: "main",
-    url: `https://github.com/${locator.owner}/${locator.repo}`
+    url: `https://github.com/${locator.owner}/${locator.repo}`,
+    connectionType: "public_github",
+    canScan: true,
+    canMonitor: false,
+    canOpenPr: false,
+    isPrivate: false,
+    permissionsSummary: {
+      contents: "public_read",
+      pullRequests: "none",
+      note: "Public URL scans do not grant write access for remediation PRs."
+    }
   });
   const scanJobRecord = await store.createScanJob({
     repositoryId: repository.id,

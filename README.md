@@ -2,75 +2,70 @@
 
 AutoCyber is an AI security engineer for AI-built startup stacks. It helps small teams detect practical security issues, understand the risk, propose fixes, verify remediation, and create trustworthy pull requests after human approval.
 
-The product is built around one loop:
+The product loop is:
 
 ```txt
 Detect -> Explain -> Fix -> Verify -> PR -> Remember -> Monitor
 ```
 
-AutoCyber is not intended to be a generic scanner dashboard. The goal is to become a practical security teammate for AI-built startups using tools like GitHub, Next.js, Node.js, Supabase, Vercel, Clerk, Stripe, OpenAI, and Anthropic.
+AutoCyber is not a generic scanner dashboard. The goal is to become a practical security teammate for AI-built startups using tools like GitHub, Next.js, Node.js, Supabase, Vercel, Clerk, Stripe, OpenAI, and Anthropic.
 
-## Current Prototype Status
+## Current Progress
 
-This repo is an early full-stack prototype with the core security workflow partially implemented.
+AutoCyber is an early full-stack prototype with the core remediation loop working in local and development flows, plus Stage 6 continuous-monitoring pieces in progress.
 
 Implemented:
 
-- Next.js App Router product shell
-- Dashboard, projects, repositories, scans, findings, finding detail, fix proposals, verification, pull requests, integrations, security memory, workflows, and settings pages
-- Shared domain models for projects, repositories, scan jobs, findings, fix proposals, verification results, pull requests, integrations, security memory, workflows, and audit logs
-- Local repository scanner wiring through the web app API
-- Public GitHub repository scan flow for development use
-- Project detection for modern startup stacks
-- Normalized security findings with severity, confidence, evidence, risk explanation, remediation summary, and autofix availability
-- Scanner fixtures and tests
+- Product shell with dashboard, projects, repositories, scans, findings, finding detail, fix proposals, verification, pull requests, integrations, security memory, workflows, settings, and notifications pages
+- Shared domain models for repositories, scan jobs, findings, fix proposals, verification results, pull requests, integrations, memories, workflow playbooks, audit logs, repository monitoring metadata, and notifications
+- Local repository scan flow
+- Public GitHub repository scan flow
+- Private GitHub repository ingestion boundary through GitHub App installation metadata
+- Project detection for common startup stacks
+- Normalized findings with severity, confidence, evidence, risk explanation, remediation summary, verification strategy, and autofix availability
+- Scanner rules and fixtures for Next.js, Node.js, Supabase, Vercel, Clerk, Stripe, OpenAI, and Anthropic risks
+- Findings dashboard and finding detail workflow
 - Rule-based fix proposal generation for supported findings
 - Local remediation and verification helpers
-- Token-mode GitHub pull request remediation prototype guarded by approval and verification checks
-- Drizzle schema and migrations for the product data model
-- Mock data for demo and empty-state development
+- Token-mode GitHub PR prototype for approved and verified remediation executions
+- GitHub App callback route that records installation repositories and capabilities
+- GitHub webhook route with HMAC signature validation for push and pull request events
+- Queued scan job model for monitoring scans
+- Retry flow for failed scans
+- Monitoring history and notification UI
+- Drizzle schema and migrations for the current product data model
 
-Still prototype or planned:
+Prototype or planned:
 
-- Production GitHub App installation flow
-- Continuous monitoring on push and pull request events
-- Production background job system
-- Real team onboarding and billing
-- Full integration setup for Vercel, Supabase, Clerk, Stripe, Firebase, Railway, Render, OpenAI, and Anthropic
-- Autonomous remediation beyond guarded human-approved flows
+- Production GitHub App installation UX
+- Production background worker for queued scans
+- Production-grade private repository fetching and PR creation through GitHub App tokens
+- Team onboarding, billing, usage limits, and production auth policy
+- Full setup flows for Vercel, Supabase, Clerk, Stripe, Firebase, Railway, Render, OpenAI, and Anthropic
+- Autonomous remediation beyond human-approved flows
 
-## How It Works
+Stage status:
 
-1. A user adds a local repository path or public GitHub repository URL.
+- Stage 0 Product Foundation: complete
+- Stage 1 Repo Scanner: implemented for local and public GitHub development flows
+- Stage 2 Findings Dashboard: implemented
+- Stage 3 Fix Proposal Engine: implemented for rule-based proposals
+- Stage 4 Verified PR Remediation: implemented as a guarded local/token-mode prototype
+- Stage 5 Startup-Stack Integrations: scanner checks implemented for key startup-stack risks
+- Stage 6 Continuous Monitoring: in progress with GitHub App metadata, signed webhooks, queued scan jobs, retries, history, and notifications
+
+## How AutoCyber Works
+
+1. A user adds a local repository path, public GitHub URL, or connected GitHub App repository.
 2. AutoCyber ingests files with scanner limits and treats repository contents as untrusted input.
 3. The scanner detects project type and runs security rules.
 4. Findings are normalized with affected files, evidence, severity, confidence, risk explanation, and remediation guidance.
-5. The dashboard presents findings in a security-review workflow.
-6. For supported findings, AutoCyber generates a human-reviewable fix proposal with a patch, risk note, and verification plan.
+5. The dashboard presents findings in a review workflow.
+6. Supported findings can generate a human-reviewable fix proposal with a patch, risk note, and verification plan.
 7. Approved proposals can be applied to a temporary copy and verified.
-8. Verified remediations can create a GitHub pull request in local token-mode prototype flows.
-9. Repository profile and decision context are shaped for future security memory.
-
-## Scanner Coverage
-
-The current scanner focuses on practical issues common in AI-built startup applications:
-
-- Exposed secrets and unsafe environment variable handling
-- Missing `.env.example`
-- Wildcard CORS
-- Missing authentication in Next.js API routes
-- Missing authorization for privileged routes
-- Missing baseline security headers
-- Dangerous `NEXT_PUBLIC_*` usage
-- Insecure webhook handlers
-- Dependency risk placeholders
-- Supabase service-role and RLS risks
-- Vercel risky config
-- Clerk auth and organization authorization gaps
-- Stripe webhook and payment-state risks
-- AI route rate-limit, prompt logging, and client-side key risks
-
-This is not full security coverage. Findings should be treated as practical review signals, not a guarantee that an app is secure.
+8. Verified remediation can create a GitHub pull request in the current token-mode prototype.
+9. GitHub webhooks can queue monitoring scans for push and pull request events.
+10. Repository profile and scan history feed future security memory.
 
 ## Tech Stack
 
@@ -89,6 +84,8 @@ Backend and app services:
 - TypeScript service modules
 - Drizzle ORM schema for Supabase Postgres-ready persistence
 - Development persistence abstraction for prototype flows
+- GitHub webhook signature validation
+- Queued scan-job abstraction for continuous monitoring
 
 Security and remediation:
 
@@ -98,13 +95,14 @@ Security and remediation:
 - Rule-based fix proposal templates
 - Local remediation verification helpers
 - Octokit-based GitHub PR prototype
+- GitHub App installation metadata and private repository ingestion boundary
 
 Tooling:
 
 - pnpm workspaces
 - Turbo
 - Vitest
-- TypeScript strict-mode-oriented package setup
+- TypeScript
 - Prettier
 
 ## Repository Structure
@@ -124,91 +122,172 @@ packages/
   sandbox/          Future isolated execution and file access boundary
 ```
 
-## Getting Started
+## Step-By-Step Guide
 
-Prerequisites:
+### 1. Clone The Repo
 
-- Node.js 22 or compatible current LTS
-- pnpm 9.15.0
+```bash
+git clone https://github.com/programmingishardlol/AutoCyber.git
+cd AutoCyber
+```
 
-Install dependencies:
+### 2. Install Dependencies
+
+Use pnpm 9.15.0.
 
 ```bash
 pnpm install
 ```
 
-Run the app:
+### 3. Create Local Environment Config
 
-```bash
-pnpm dev
-```
-
-The web app runs from `apps/web`. By default, Next.js serves it on `http://localhost:3000`.
-
-Run checks:
-
-```bash
-pnpm typecheck
-pnpm test
-pnpm scanner:test
-pnpm build
-```
-
-## Environment
-
-Copy the safe template and fill in only the values needed for your local flow:
+Copy the safe template:
 
 ```bash
 cp .env.example .env.local
 ```
 
-Put real local secrets, such as Clerk keys, Supabase URLs, API keys, or a GitHub test token, in `.env.local`. Do not put real secrets in `README.md`, `.env.example`, source files, tests, screenshots, issues, commits, or pull requests. `.env.example` contains empty placeholders and is safe to publish.
+Put real local secrets only in `.env.local`. Do not put real secrets in `README.md`, `.env.example`, source files, tests, screenshots, issues, commits, or pull requests.
 
-Common local settings:
+For basic local demo usage, most values can stay empty. Add real values only when you use the related feature:
 
-- `NEXT_PUBLIC_APP_URL`: local app URL
-- `AUTOCYBER_PERSISTENCE`: persistence mode for development flows
-- `DATABASE_URL` or `SUPABASE_DATABASE_URL`: database connection, when using Postgres-backed persistence
-- `CLERK_SECRET_KEY` and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`: auth configuration, when enabling Clerk
-- `GITHUB_TOKEN` or `GITHUB_FINE_GRAINED_TOKEN`: local-only token-mode PR prototype
-- `SCANNER_WORKDIR`, `SCANNER_MAX_FILE_SIZE_MB`, `SCANNER_TIMEOUT_SECONDS`: scanner safety controls
+- `DATABASE_URL` or `SUPABASE_DATABASE_URL`: database-backed persistence
+- `CLERK_SECRET_KEY` and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`: Clerk auth
+- `GITHUB_TOKEN` or `GITHUB_FINE_GRAINED_TOKEN`: local token-mode PR prototype against a test repository
+- `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_INSTALL_URL`: GitHub App connection experiments
+- `GITHUB_WEBHOOK_SECRET`: signed GitHub webhook testing
+- `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`: future AI-assisted flows
 
-For GitHub token-mode testing, use a fine-grained token scoped to one test repository with only the permissions needed for contents and pull requests.
+For scanner fixture development, generate fake secret-shaped values inside tests. Do not commit `.env` fixture files, even when the values are fake.
 
-For scanner fixture development, use fake secret-shaped values generated inside tests. Do not commit `.env` fixture files, even when the values are fake.
+### 4. Run The App
 
-## Development Workflow
+```bash
+pnpm dev
+```
 
-Use the product loop as the development loop:
+Open `http://localhost:3000`.
 
-1. Add or update a scanner rule.
-2. Add fixtures that show vulnerable and secure examples.
-3. Return normalized findings with evidence and remediation guidance.
-4. Add UI/API wiring so the scanner can be triggered from the app.
-5. Add or update fix proposal templates when a safe deterministic fix exists.
-6. Verify remediation with scanner reruns and relevant tests.
-7. Only create PRs after explicit human approval.
-8. Record decisions for future security memory.
+### 5. Run A Local Scan
 
-Security rules for development:
+Open the scanner page and use the built-in vulnerable fixture path shown in the UI, or scan another local development repository path.
 
-- Treat scanned repositories as untrusted input.
-- Do not execute arbitrary repository code by default.
-- Do not expose secrets in logs, UI, tests, errors, or findings.
-- Redact sensitive values before display or storage.
-- Never claim remediation is verified unless verification actually ran.
-- Prefer small, reviewable remediation pull requests.
+The scanner will return normalized findings and persist them into the development store.
+
+### 6. Run A Public GitHub Scan
+
+On the scanner page, choose GitHub URL and enter a public repository URL such as:
+
+```txt
+https://github.com/owner/repo
+```
+
+Private repository scans require the GitHub App flow and are still prototype-level.
+
+### 7. Review Findings
+
+Use:
+
+- `/findings` for the findings dashboard
+- `/findings/[id]` for evidence, risk explanation, affected file, confidence, and remediation guidance
+- filters for severity, status, category, stack, and autofix availability
+
+### 8. Generate A Fix Proposal
+
+From a supported finding, generate a proposal to review:
+
+- explanation of the fix
+- proposed patch or diff
+- risk of the change
+- verification plan
+- approval/rejection status
+
+AutoCyber should never modify user code without human approval.
+
+### 9. Verify Remediation
+
+Approved proposals can be applied to a temporary working copy and verified with scanner reruns and relevant checks where available.
+
+Do not treat a fix as verified unless the verification command actually ran.
+
+### 10. Create A GitHub PR Prototype
+
+For local testing only:
+
+1. Create a dedicated test repository.
+2. Add a fine-grained GitHub token to `.env.local`.
+3. Scope the token to the test repository.
+4. Grant only contents and pull request permissions needed for the prototype.
+5. Approve and verify a remediation proposal.
+6. Use the PR flow to create a branch and pull request.
+
+Do not use a broad personal token or a production repository for early prototype testing.
+
+### 11. Try Monitoring Flows
+
+Stage 6 monitoring is in progress. Current pieces include:
+
+- GitHub App callback route: `/api/github-app/callback`
+- GitHub webhook route: `/api/webhooks/github`
+- Retry route: `/api/scans/retry`
+- Notifications route: `/api/notifications`
+- Monitoring history page: `/scans`
+- Notifications page: `/notifications`
+
+For webhook testing:
+
+1. Set `GITHUB_WEBHOOK_SECRET` in `.env.local`.
+2. Connect or seed a GitHub repository record.
+3. Send a signed `push` or `pull_request` webhook payload.
+4. Use `AUTOCYBER_WEBHOOK_EXECUTION_MODE=queued` for queued jobs or `inline` for local synchronous testing.
+5. Review monitoring history and notifications in the UI.
 
 ## API Routes
 
 Current app routes include:
 
-- `POST /api/scans`: run a local or public GitHub repository scan
-- `GET /api/mock/summary`: return demo summary data
 - `GET /api/health`: health check
+- `GET /api/mock/summary`: demo summary data
+- `POST /api/scans`: local or public GitHub scan
+- `POST /api/scans/retry`: retry a failed scan job
 - `POST /api/fix-proposals`: generate a fix proposal from a normalized finding
 - `POST /api/remediations`: apply and verify an approved proposal in a local remediation flow
-- `POST /api/github-prs`: create a GitHub PR from an approved and verified remediation execution
+- `POST /api/github-prs`: create a PR from an approved and verified remediation execution
+- `GET /api/github-app/callback`: record GitHub App installation repositories
+- `POST /api/webhooks/github`: validate and process GitHub push or pull request webhooks
+- `POST /api/notifications`: mark notifications read or dismissed
+
+## Scanner Coverage
+
+Current scanner rules focus on practical issues common in AI-built startup applications:
+
+- Exposed secrets and unsafe environment variable handling
+- Missing `.env.example`
+- Wildcard CORS
+- Missing authentication in Next.js API routes
+- Missing authorization for privileged routes
+- Missing baseline security headers
+- Dangerous `NEXT_PUBLIC_*` usage
+- Insecure webhook handlers
+- Dependency risk placeholders
+- Supabase service-role and RLS risks
+- Vercel risky config
+- Clerk auth and organization authorization gaps
+- Stripe webhook and payment-state risks
+- AI route rate-limit, prompt logging, and client-side key risks
+
+This is not full security coverage. Findings should be treated as practical review signals, not a guarantee that an app is secure.
+
+## Checks
+
+Run focused checks during development:
+
+```bash
+pnpm scanner:test
+pnpm test
+pnpm typecheck
+pnpm build
+```
 
 ## Publishing Safety
 
@@ -226,20 +305,4 @@ git status --short
 git status --ignored --short
 ```
 
-## Roadmap
-
-The long-term roadmap is:
-
-1. Product foundation
-2. Repo scanner
-3. Findings dashboard
-4. Fix proposal engine
-5. Verified PR remediation
-6. Startup-stack integrations
-7. Continuous monitoring
-8. Security memory
-9. Opinionated workflows
-10. Customer-ready SaaS
-11. Autonomous remediation layer
-
-The near-term priority is strengthening the core loop: scan a real repo, explain a real finding, propose a safe fix, verify it, and create a trustworthy PR after approval.
+Never commit real API keys, GitHub tokens, database URLs, private keys, webhook secrets, service-role keys, or local customer/repository notes.

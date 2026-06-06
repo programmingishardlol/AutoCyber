@@ -11,9 +11,9 @@ describe("scan API route", () => {
         method: "POST",
         body: JSON.stringify({
           source: "github",
-          repoUrl: "https://gitlab.com/example/app"
-        })
-      })
+          repoUrl: "https://gitlab.com/example/app",
+        }),
+      }),
     );
 
     const body = await response.json();
@@ -24,9 +24,17 @@ describe("scan API route", () => {
   });
 
   it("scans public GitHub URL input through the local scanner after clone ingestion", async () => {
-    const clonedRepo = await mkdtemp(join(tmpdir(), "autocyber-api-github-scan-"));
-    await writeFile(join(clonedRepo, "package.json"), JSON.stringify({ dependencies: { next: "latest" } }));
-    await writeFile(join(clonedRepo, ".env"), "OPENAI_API_KEY=sk-proj-stage5dtest000000000000000000000000000000");
+    const clonedRepo = await mkdtemp(
+      join(tmpdir(), "autocyber-api-github-scan-"),
+    );
+    await writeFile(
+      join(clonedRepo, "package.json"),
+      JSON.stringify({ dependencies: { next: "latest" } }),
+    );
+    await writeFile(
+      join(clonedRepo, ".env"),
+      envLine("OPENAI_API_KEY", fakeOpenAiKey("stage5dtest")),
+    );
 
     vi.stubEnv("AUTOCYBER_TEST_GITHUB_CLONE_PATH", clonedRepo);
     const response = await POST(
@@ -34,9 +42,9 @@ describe("scan API route", () => {
         method: "POST",
         body: JSON.stringify({
           source: "github",
-          repoUrl: "https://github.com/example/public-app"
-        })
-      })
+          repoUrl: "https://github.com/example/public-app",
+        }),
+      }),
     );
     vi.unstubAllEnvs();
 
@@ -46,8 +54,17 @@ describe("scan API route", () => {
     expect(body.scanJob.status).toBe("completed");
     expect(body.scanJob.source).toBe("github");
     expect(body.repository.provider).toBe("github");
-    expect(body.findings.some((finding: { ruleId: string }) => finding.ruleId === "exposed-secret")).toBe(true);
-    expect(JSON.stringify(body)).not.toContain("stage5dtest000000000000000000000000000000");
+    expect(body.repository.connectionType).toBe("public_github");
+    expect(body.repository.canScan).toBe(true);
+    expect(body.repository.canOpenPr).toBe(false);
+    expect(
+      body.findings.some(
+        (finding: { ruleId: string }) => finding.ruleId === "exposed-secret",
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(body)).not.toContain(
+      "stage5dtest000000000000000000000000000000",
+    );
   });
 
   it("rejects invalid local paths without exposing stack traces", async () => {
@@ -56,9 +73,9 @@ describe("scan API route", () => {
         method: "POST",
         body: JSON.stringify({
           source: "local",
-          path: "/etc"
-        })
-      })
+          path: "/etc",
+        }),
+      }),
     );
 
     const body = await response.json();
@@ -68,3 +85,11 @@ describe("scan API route", () => {
     expect(JSON.stringify(body)).not.toContain("Error:");
   });
 });
+
+function envLine(name: string, value: string): string {
+  return `${name}=${value}`;
+}
+
+function fakeOpenAiKey(label: string): string {
+  return ["sk", "proj", `${label}000000000000000000000000000000`].join("-");
+}

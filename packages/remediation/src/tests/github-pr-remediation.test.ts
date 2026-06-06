@@ -6,7 +6,7 @@ import {
   createGitHubPrRemediation,
   createPullRequestBody,
   createRemediationBranchName,
-  type GitHubRemediationClient
+  type GitHubRemediationClient,
 } from "../index";
 import type { FixProposal } from "@autocyber/core";
 import type { LocalRemediationExecution } from "../types";
@@ -30,7 +30,7 @@ const approvedProposal: FixProposal = {
   verificationPlan: ["Rerun the unsafe-cors-wildcard scanner rule."],
   filesChanged: ["src/server.ts"],
   createdAt: "2026-05-28T10:00:00.000Z",
-  updatedAt: "2026-05-28T10:00:00.000Z"
+  updatedAt: "2026-05-28T10:00:00.000Z",
 };
 
 const verifiedExecution: LocalRemediationExecution = {
@@ -46,20 +46,22 @@ const verifiedExecution: LocalRemediationExecution = {
       {
         name: "scanner-rule",
         status: "passed",
-        outputSummary: "unsafe-cors-wildcard no longer appears for src/server.ts."
+        outputSummary:
+          "unsafe-cors-wildcard no longer appears for src/server.ts.",
       },
       {
         name: "pattern",
         status: "passed",
-        outputSummary: "Removed patterns are absent and added patterns are present."
-      }
+        outputSummary:
+          "Removed patterns are absent and added patterns are present.",
+      },
     ],
     outputSummary: "scanner-rule passed and pattern passed",
-    limitations: ["Typecheck command was not run."]
+    limitations: ["Typecheck command was not run."],
   },
   error: null,
   createdAt: "2026-05-28T10:01:00.000Z",
-  updatedAt: "2026-05-28T10:02:00.000Z"
+  updatedAt: "2026-05-28T10:02:00.000Z",
 };
 
 describe("GitHub PR remediation", () => {
@@ -72,13 +74,13 @@ describe("GitHub PR remediation", () => {
       execution: { ...verifiedExecution, workingCopyPath },
       target: createTarget(),
       client,
-      now: "2026-05-28T10:03:00.000Z"
+      now: "2026-05-28T10:03:00.000Z",
     });
 
     expect(result).toMatchObject({
       status: "blocked",
       pullRequestUrl: null,
-      error: "Fix proposal must be approved before creating a GitHub PR."
+      error: "Fix proposal must be approved before creating a GitHub PR.",
     });
     expect(client.calls).toEqual([]);
   });
@@ -93,14 +95,19 @@ describe("GitHub PR remediation", () => {
         ...verifiedExecution,
         status: "failed",
         workingCopyPath,
-        verificationResult: { ...verifiedExecution.verificationResult!, status: "failed" }
+        verificationResult: {
+          ...verifiedExecution.verificationResult!,
+          status: "failed",
+        },
       },
       target: createTarget(),
-      client
+      client,
     });
 
     expect(result.status).toBe("blocked");
-    expect(result.error).toBe("Local verification must pass before creating a GitHub PR.");
+    expect(result.error).toBe(
+      "Local verification must pass before creating a GitHub PR.",
+    );
     expect(client.calls).toEqual([]);
   });
 
@@ -112,11 +119,13 @@ describe("GitHub PR remediation", () => {
       proposal: { ...approvedProposal, kind: "advisory" },
       execution: { ...verifiedExecution, workingCopyPath },
       target: createTarget(),
-      client
+      client,
     });
 
     expect(result.status).toBe("blocked");
-    expect(result.error).toBe("This is an advisory-only proposal and cannot be automatically remediated.");
+    expect(result.error).toBe(
+      "This is an advisory-only proposal and cannot be automatically remediated.",
+    );
     expect(client.calls).toEqual([]);
   });
 
@@ -125,14 +134,20 @@ describe("GitHub PR remediation", () => {
     const client = createMockClient();
 
     const result = await createGitHubPrRemediation({
-      proposal: { ...approvedProposal, proposedPatch: "Manual remediation required: review the route architecture." },
+      proposal: {
+        ...approvedProposal,
+        proposedPatch:
+          "Manual remediation required: review the route architecture.",
+      },
       execution: { ...verifiedExecution, workingCopyPath },
       target: createTarget(),
-      client
+      client,
     });
 
     expect(result.status).toBe("blocked");
-    expect(result.error).toBe("This is an advisory-only proposal and cannot be automatically remediated.");
+    expect(result.error).toBe(
+      "This is an advisory-only proposal and cannot be automatically remediated.",
+    );
     expect(client.calls).toEqual([]);
   });
 
@@ -144,11 +159,13 @@ describe("GitHub PR remediation", () => {
       proposal: { ...approvedProposal, diff: "Review this route manually." },
       execution: { ...verifiedExecution, workingCopyPath },
       target: createTarget(),
-      client
+      client,
     });
 
     expect(result.status).toBe("blocked");
-    expect(result.error).toBe("Fix proposal does not contain an applyable unified diff.");
+    expect(result.error).toBe(
+      "Fix proposal does not contain an applyable unified diff.",
+    );
     expect(client.calls).toEqual([]);
   });
 
@@ -163,7 +180,7 @@ describe("GitHub PR remediation", () => {
     const body = createPullRequestBody({
       proposal: approvedProposal,
       execution: verifiedExecution,
-      filesChanged: ["src/server.ts"]
+      filesChanged: ["src/server.ts"],
     });
 
     expect(body).toContain("## What changed");
@@ -184,15 +201,19 @@ describe("GitHub PR remediation", () => {
       execution: { ...verifiedExecution, workingCopyPath },
       target: createTarget(),
       client,
-      now: "2026-05-28T10:03:00.000Z"
+      now: "2026-05-28T10:03:00.000Z",
     });
 
     expect(result.status).toBe("pr_created");
     expect(result.filesChanged).toEqual(["src/server.ts"]);
     expect(client.committedFiles).toEqual(["src/server.ts"]);
-    expect(client.calls).toContain("createRef:refs/heads/autocyber/fix-restrict-cors-origins");
+    expect(client.calls).toContain(
+      "createRef:refs/heads/autocyber/fix-restrict-cors-origins",
+    );
     expect(client.committedBranches).not.toContain("main");
-    expect(result.pullRequestUrl).toBe("https://github.com/mshen0/autocyber-demo/pull/7");
+    expect(result.pullRequestUrl).toBe(
+      "https://github.com/mshen0/autocyber-demo/pull/7",
+    );
   });
 
   it("blocks verified executions that include files outside the approved proposal", async () => {
@@ -201,13 +222,19 @@ describe("GitHub PR remediation", () => {
 
     const result = await createGitHubPrRemediation({
       proposal: approvedProposal,
-      execution: { ...verifiedExecution, workingCopyPath, filesChanged: ["src/server.ts", "README.md"] },
+      execution: {
+        ...verifiedExecution,
+        workingCopyPath,
+        filesChanged: ["src/server.ts", "README.md"],
+      },
       target: createTarget(),
-      client
+      client,
     });
 
     expect(result.status).toBe("blocked");
-    expect(result.error).toBe("Verified remediation included files outside the approved proposal.");
+    expect(result.error).toBe(
+      "Verified remediation included files outside the approved proposal.",
+    );
     expect(client.calls).toEqual([]);
   });
 
@@ -219,7 +246,7 @@ describe("GitHub PR remediation", () => {
       proposal: approvedProposal,
       execution: { ...verifiedExecution, workingCopyPath },
       target: createTarget(),
-      client
+      client,
     });
 
     expect(result.status).toBe("failed");
@@ -234,19 +261,28 @@ function createTarget() {
     repo: "autocyber-demo",
     defaultBranch: "main",
     tokenMode: "token" as const,
-    repoUrl: "https://github.com/mshen0/autocyber-demo"
+    repoUrl: "https://github.com/mshen0/autocyber-demo",
   };
 }
 
 async function createWorkingCopy(): Promise<string> {
-  const workingCopyPath = await mkdtemp(join(tmpdir(), "autocyber-stage4b-test-"));
-  await import("node:fs/promises").then(({ mkdir }) => mkdir(join(workingCopyPath, "src"), { recursive: true }));
-  await writeFile(join(workingCopyPath, "src/server.ts"), 'app.use(cors({ origin: process.env.ALLOWED_ORIGIN }));\n');
+  const workingCopyPath = await mkdtemp(
+    join(tmpdir(), "autocyber-stage4b-test-"),
+  );
+  await import("node:fs/promises").then(({ mkdir }) =>
+    mkdir(join(workingCopyPath, "src"), { recursive: true }),
+  );
+  await writeFile(
+    join(workingCopyPath, "src/server.ts"),
+    "app.use(cors({ origin: process.env.ALLOWED_ORIGIN }));\n",
+  );
   await writeFile(join(workingCopyPath, "README.md"), "unrelated\n");
   return workingCopyPath;
 }
 
-function createMockClient(options: { failOnCreatePullRequest?: boolean } = {}): GitHubRemediationClient & {
+function createMockClient(
+  options: { failOnCreatePullRequest?: boolean } = {},
+): GitHubRemediationClient & {
   calls: string[];
   committedFiles: string[];
   committedBranches: string[];
@@ -270,15 +306,26 @@ function createMockClient(options: { failOnCreatePullRequest?: boolean } = {}): 
       calls.push(`commitFiles:${branch}`);
       committedBranches.push(branch);
       committedFiles.push(...files.map((file) => file.path));
-      await readFile(join(tmpdir(), "missing-file"), "utf8").catch(() => undefined);
+      await readFile(join(tmpdir(), "missing-file"), "utf8").catch(
+        () => undefined,
+      );
       return { commitSha: "commit-sha" };
     },
     async createPullRequest() {
       calls.push("createPullRequest");
       if (options.failOnCreatePullRequest) {
-        throw new Error("ghp_example_secret_token_should_not_leak");
+        throw new Error(
+          fakeGitHubToken("example_secret_token_should_not_leak"),
+        );
       }
-      return { url: "https://github.com/mshen0/autocyber-demo/pull/7", number: 7 };
-    }
+      return {
+        url: "https://github.com/mshen0/autocyber-demo/pull/7",
+        number: 7,
+      };
+    },
   };
+}
+
+function fakeGitHubToken(label: string): string {
+  return ["ghp", label].join("_");
 }

@@ -12,7 +12,11 @@ export interface GitHubRepositoryLocator {
   repoUrl: string;
 }
 
-export type GitRunner = (command: string, args: string[]) => Promise<void>;
+export interface GitRunnerOptions {
+  env?: Record<string, string>;
+}
+
+export type GitRunner = (command: string, args: string[], options?: GitRunnerOptions) => Promise<void>;
 
 export interface ClonePublicGitHubRepositoryInput<T> {
   repoUrl: string;
@@ -23,7 +27,11 @@ export interface ClonePublicGitHubRepositoryInput<T> {
 
 export class GitHubIngestionError extends Error {
   constructor(
-    public readonly code: "invalid_github_url" | "unreachable_public_repo",
+    public readonly code:
+      | "invalid_github_url"
+      | "unreachable_public_repo"
+      | "private_repo_requires_installation"
+      | "private_repo_clone_failed",
     message: string
   ) {
     super(message);
@@ -76,8 +84,9 @@ export async function clonePublicGitHubRepository<T>(input: ClonePublicGitHubRep
   }
 }
 
-async function defaultRunGit(command: string, args: string[]): Promise<void> {
+async function defaultRunGit(command: string, args: string[], options: GitRunnerOptions = {}): Promise<void> {
   await execFileAsync(command, args, {
+    env: options.env ? { ...process.env, ...options.env } : process.env,
     timeout: Number(process.env.SCANNER_TIMEOUT_SECONDS ?? "120") * 1000,
     maxBuffer: 1024 * 1024
   });
@@ -92,5 +101,5 @@ function safeCloneMessage(error: string): string {
 }
 
 function privateRepoMessage(): string {
-  return "AutoCyber could not access that public repository. Private GitHub URL scans require the future GitHub App flow.";
+  return "AutoCyber could not access that public repository. Private GitHub monitoring requires a connected GitHub App installation.";
 }

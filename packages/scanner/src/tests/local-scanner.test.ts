@@ -10,8 +10,15 @@ const fixturesRoot = join(
   "../fixtures",
 );
 const insecureStartupEnv = [
-  "OPENAI_API_KEY=sk-proj-autocyberfixture000000000000000000000000",
-  "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.autocyberfixture.service_role",
+  envLine("OPENAI_API_KEY", fakeOpenAiKey("autocyberfixture")),
+  envLine(
+    "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY",
+    [
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+      "autocyberfixture",
+      "service_role",
+    ].join("."),
+  ),
 ].join("\n");
 
 describe("local repository scanner", () => {
@@ -156,7 +163,7 @@ describe("local repository scanner", () => {
     );
     await writeFile(
       join(repositoryPath, ".env"),
-      "OPENAI_API_KEY=sk-proj-realfixture000000000000000000000000\n",
+      `${envLine("OPENAI_API_KEY", fakeOpenAiKey("realfixture"))}\n`,
     );
     await mkdir(join(repositoryPath, "app/api/admin/users"), {
       recursive: true,
@@ -213,4 +220,12 @@ async function createFixtureCopy(
   }
 
   return repositoryPath;
+}
+
+function envLine(name: string, value: string): string {
+  return `${name}=${value}`;
+}
+
+function fakeOpenAiKey(label: string): string {
+  return ["sk", "proj", `${label}000000000000000000000000`].join("-");
 }

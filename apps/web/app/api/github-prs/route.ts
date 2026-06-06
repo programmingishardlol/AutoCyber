@@ -46,6 +46,18 @@ export async function POST(request: Request) {
     );
   }
 
+  const store = getPersistenceStore();
+  const repository = await store.findGitHubRepository(target.owner, target.repo);
+  if (repository && !repository.canOpenPr && repository.connectionType !== "token_dev") {
+    return NextResponse.json(
+      {
+        error: "GitHub connection required",
+        message: "Connect GitHub with PR permissions before AutoCyber can open a remediation PR."
+      },
+      { status: 403 }
+    );
+  }
+
   if (target.tokenMode === "github-app") {
     return NextResponse.json(
       { error: "GitHub App mode unavailable", message: "GitHub App installation token exchange is a Stage 4B placeholder. Use token mode for local test repos." },
@@ -68,7 +80,7 @@ export async function POST(request: Request) {
     client: createOctokitRemediationClient(token)
   });
   if (result.status === "pr_created") {
-    await getPersistenceStore().savePullRequest({
+    await store.savePullRequest({
       id: result.id,
       fixProposalId: result.fixProposalId,
       repositoryId: result.repositoryId,

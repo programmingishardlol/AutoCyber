@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import type {
   AuditLog,
   Finding,
   FixProposal,
+  Notification,
   PullRequestRecord,
   Repository,
   ScanJob,
@@ -17,6 +18,7 @@ import {
   auditLogs,
   findings,
   fixProposals,
+  notifications,
   pullRequests,
   repositories,
   scanJobs,
@@ -25,8 +27,12 @@ import {
 } from "../db/schema";
 
 type FindingSummary = ScanJob["summary"];
-type RepositoryInput = Pick<Repository, "projectId" | "provider" | "owner" | "name" | "defaultBranch" | "url">;
-type ScanJobInput = Pick<ScanJob, "repositoryId" | "source" | "branch" | "commitSha">;
+type RepositoryInput = Pick<Repository, "projectId" | "provider" | "owner" | "name" | "defaultBranch" | "url"> &
+  Partial<Pick<Repository, "installationId" | "isPrivate" | "connectionType" | "canScan" | "canMonitor" | "canOpenPr" | "permissionsSummary">>;
+type ScanJobInput = Pick<ScanJob, "repositoryId" | "source" | "branch" | "commitSha"> &
+  Partial<Pick<ScanJob, "status" | "webhookDeliveryId" | "pullRequestNumber">>;
+type NotificationInput = Pick<Notification, "repositoryId" | "type" | "severity" | "title" | "message"> &
+  Partial<Pick<Notification, "teamId" | "scanJobId" | "findingId" | "status">>;
 
 const defaultTeamId = "team_dev";
 const actor = "autocyber";
@@ -39,19 +45,32 @@ export interface PersistenceSnapshot {
   fixProposals: FixProposal[];
   verificationResults: VerificationResult[];
   pullRequests: PullRequestRecord[];
+  notifications: Notification[];
   securityMemories: SecurityMemory[];
   auditLogs: AuditLog[];
 }
 
 export interface PersistenceStore {
   upsertRepository(input: RepositoryInput): Promise<Repository>;
+  findGitHubRepository(owner: string, name: string): Promise<Repository | null>;
+  getRepository(repositoryId: string): Promise<Repository | null>;
+  listRepositories(): Promise<Repository[]>;
+  getScanJob(scanJobId: string): Promise<ScanJob | null>;
+  listScanJobs(): Promise<ScanJob[]>;
+  hasWebhookDelivery(deliveryId: string): Promise<boolean>;
   createScanJob(input: ScanJobInput): Promise<ScanJob>;
+  markScanJobRunning(scanJobId: string): Promise<void>;
   completeScanJob(scanJobId: string, summary: FindingSummary): Promise<void>;
-  failScanJob(scanJobId: string): Promise<void>;
+  failScanJob(scanJobId: string, error?: string): Promise<void>;
   saveFindings(input: NormalizedFinding[]): Promise<Finding[]>;
+  listFindings(): Promise<Finding[]>;
   saveFixProposal(input: FixProposal): Promise<void>;
   saveVerificationResult(input: VerificationResult): Promise<void>;
   savePullRequest(input: PullRequestRecord): Promise<void>;
+  createNotification(input: NotificationInput): Promise<Notification>;
+  listNotifications(): Promise<Notification[]>;
+  markNotificationRead(notificationId: string): Promise<Notification | null>;
+  dismissNotification(notificationId: string): Promise<Notification | null>;
   upsertRepoProfileMemory(repositoryId: string, profile: ProjectProfile): Promise<void>;
   recordFixDecisionMemory(repositoryId: string, proposal: FixProposal, decision: "accepted_fix" | "rejected_fix"): Promise<void>;
   writeAuditLog(action: string, targetType: string, targetId: string): Promise<void>;
@@ -66,6 +85,7 @@ export function createDevPersistenceStore(): PersistenceStore {
     fixProposals: [],
     verificationResults: [],
     pullRequests: [],
+    notifications: [],
     securityMemories: [],
     auditLogs: []
   };
@@ -80,12 +100,27 @@ export function createDevPersistenceStore(): PersistenceStore {
       if (existing) {
         existing.defaultBranch = input.defaultBranch;
         existing.url = input.url;
+        existing.installationId = input.installationId ?? existing.installationId;
+        existing.isPrivate = input.isPrivate ?? existing.isPrivate;
+        existing.connectionType = input.connectionType ?? existing.connectionType;
+        existing.canScan = input.canScan ?? existing.canScan;
+        existing.canMonitor = input.canMonitor ?? existing.canMonitor;
+        existing.canOpenPr = input.canOpenPr ?? existing.canOpenPr;
+        existing.permissionsSummary = input.permissionsSummary ?? existing.permissionsSummary;
         existing.updatedAt = now;
         return existing;
       }
 
+      const capabilityDefaults = getRepositoryCapabilityDefaults(input);
       const repository: Repository = {
         id: createId("repo"),
+        installationId: input.installationId ?? null,
+        isPrivate: input.isPrivate ?? false,
+        connectionType: input.connectionType ?? capabilityDefaults.connectionType,
+        canScan: input.canScan ?? capabilityDefaults.canScan,
+        canMonitor: input.canMonitor ?? capabilityDefaults.canMonitor,
+        canOpenPr: input.canOpenPr ?? capabilityDefaults.canOpenPr,
+        permissionsSummary: input.permissionsSummary ?? capabilityDefaults.permissionsSummary,
         lastScannedAt: null,
         createdAt: now,
         updatedAt: now,
@@ -96,19 +131,61 @@ export function createDevPersistenceStore(): PersistenceStore {
       return repository;
     },
 
+    async findGitHubRepository(owner, name) {
+      return state.repositories.find((repository) => repository.provider === "github" && repository.owner === owner && repository.name === name) ?? null;
+    },
+
+    async getRepository(repositoryId) {
+      return state.repositories.find((repository) => repository.id === repositoryId) ?? null;
+    },
+
+    async listRepositories() {
+      return [...state.repositories];
+    },
+
+    async getScanJob(scanJobId) {
+      return state.scanJobs.find((scanJob) => scanJob.id === scanJobId) ?? null;
+    },
+
+    async listScanJobs() {
+      return [...state.scanJobs];
+    },
+
+    async hasWebhookDelivery(deliveryId) {
+      return state.auditLogs.some((log) => log.action === "webhook_received" && log.targetType === "github_delivery" && log.targetId === deliveryId);
+    },
+
     async createScanJob(input) {
       const now = isoNow();
+      const status = input.status ?? "running";
       const scanJob: ScanJob = {
         id: createId("scan"),
-        status: "running",
-        startedAt: now,
+        status,
+        repositoryId: input.repositoryId,
+        source: input.source,
+        branch: input.branch,
+        commitSha: input.commitSha,
+        startedAt: status === "queued" ? null : now,
         completedAt: null,
         summary: { ...emptySummary },
-        ...input
+        webhookDeliveryId: input.webhookDeliveryId ?? null,
+        pullRequestNumber: input.pullRequestNumber ?? null,
+        error: null
       };
       state.scanJobs.push(scanJob);
-      await this.writeAuditLog("scan_started", "scan_job", scanJob.id);
+      await this.writeAuditLog(status === "queued" ? "scan_queued" : "scan_started", "scan_job", scanJob.id);
       return scanJob;
+    },
+
+    async markScanJobRunning(scanJobId) {
+      const scanJob = state.scanJobs.find((candidate) => candidate.id === scanJobId);
+      if (scanJob) {
+        scanJob.status = "running";
+        scanJob.startedAt = isoNow();
+        scanJob.completedAt = null;
+        scanJob.error = null;
+      }
+      await this.writeAuditLog("scan_running", "scan_job", scanJobId);
     },
 
     async completeScanJob(scanJobId, summary) {
@@ -117,17 +194,19 @@ export function createDevPersistenceStore(): PersistenceStore {
         scanJob.status = "completed";
         scanJob.completedAt = isoNow();
         scanJob.summary = summary;
+        scanJob.error = null;
         const repository = state.repositories.find((candidate) => candidate.id === scanJob.repositoryId);
         if (repository) repository.lastScannedAt = scanJob.completedAt;
       }
       await this.writeAuditLog("scan_completed", "scan_job", scanJobId);
     },
 
-    async failScanJob(scanJobId) {
+    async failScanJob(scanJobId, error = "AutoCyber could not complete the monitoring scan.") {
       const scanJob = state.scanJobs.find((candidate) => candidate.id === scanJobId);
       if (scanJob) {
         scanJob.status = "failed";
         scanJob.completedAt = isoNow();
+        scanJob.error = error;
       }
       await this.writeAuditLog("scan_failed", "scan_job", scanJobId);
     },
@@ -161,6 +240,10 @@ export function createDevPersistenceStore(): PersistenceStore {
       return records;
     },
 
+    async listFindings() {
+      return [...state.findings];
+    },
+
     async saveFixProposal(input) {
       upsertById(state.fixProposals, input);
       await this.writeAuditLog("fix_proposal_created", "fix_proposal", input.id);
@@ -181,6 +264,49 @@ export function createDevPersistenceStore(): PersistenceStore {
     async savePullRequest(input) {
       upsertById(state.pullRequests, input);
       await this.writeAuditLog("github_pr_created", "pull_request", input.id);
+    },
+
+    async createNotification(input) {
+      const now = isoNow();
+      const notification: Notification = {
+        id: createId("notification"),
+        teamId: input.teamId ?? defaultTeamId,
+        repositoryId: input.repositoryId,
+        scanJobId: input.scanJobId ?? null,
+        findingId: input.findingId ?? null,
+        type: input.type,
+        severity: input.severity,
+        title: input.title,
+        message: input.message,
+        status: input.status ?? "unread",
+        createdAt: now,
+        updatedAt: now
+      };
+      state.notifications.push(notification);
+      await this.writeAuditLog("notification_created", "notification", notification.id);
+      return notification;
+    },
+
+    async listNotifications() {
+      return [...state.notifications].sort((first, second) => second.createdAt.localeCompare(first.createdAt));
+    },
+
+    async markNotificationRead(notificationId) {
+      const notification = state.notifications.find((candidate) => candidate.id === notificationId);
+      if (!notification) return null;
+      notification.status = "read";
+      notification.updatedAt = isoNow();
+      await this.writeAuditLog("notification_read", "notification", notification.id);
+      return notification;
+    },
+
+    async dismissNotification(notificationId) {
+      const notification = state.notifications.find((candidate) => candidate.id === notificationId);
+      if (!notification) return null;
+      notification.status = "dismissed";
+      notification.updatedAt = isoNow();
+      await this.writeAuditLog("notification_dismissed", "notification", notification.id);
+      return notification;
     },
 
     async upsertRepoProfileMemory(repositoryId, profile) {
@@ -267,10 +393,82 @@ function createDatabasePersistenceStore(connectionString: string): PersistenceSt
     ...devStore,
     async upsertRepository(input) {
       const before = getSideEffectCounts(devStore.snapshot());
+      const localRepository = devStore
+        .snapshot()
+        .repositories.find((repository) => repository.provider === input.provider && repository.owner === input.owner && repository.name === input.name);
+
+      if (!localRepository) {
+        const existingRows = await db
+          .select()
+          .from(repositories)
+          .where(and(eq(repositories.provider, input.provider), eq(repositories.owner, input.owner), eq(repositories.name, input.name)))
+          .limit(1);
+
+        if (existingRows[0]) {
+          const repository = applyRepositoryInput(fromRepositoryRow(existingRows[0]), input);
+          await db.update(repositories).set(toRepositoryRow(repository)).where(eq(repositories.id, repository.id));
+          await devStore.writeAuditLog("repo_updated", "repository", repository.id);
+          await persistNewSideEffects(before);
+          return repository;
+        }
+      }
+
       const repository = await devStore.upsertRepository(input);
-      await db.insert(repositories).values(toRepositoryRow(repository)).onConflictDoNothing();
+      const row = toRepositoryRow(repository);
+      await db
+        .insert(repositories)
+        .values(row)
+        .onConflictDoUpdate({
+          target: repositories.id,
+          set: row
+        });
       await persistNewSideEffects(before);
       return repository;
+    },
+    async findGitHubRepository(owner, name) {
+      const local = await devStore.findGitHubRepository(owner, name);
+      if (local) return local;
+
+      const rows = await db
+        .select()
+        .from(repositories)
+        .where(and(eq(repositories.provider, "github"), eq(repositories.owner, owner), eq(repositories.name, name)))
+        .limit(1);
+
+      return rows[0] ? fromRepositoryRow(rows[0]) : null;
+    },
+    async getRepository(repositoryId) {
+      const local = await devStore.getRepository(repositoryId);
+      if (local) return local;
+
+      const rows = await db.select().from(repositories).where(eq(repositories.id, repositoryId)).limit(1);
+      return rows[0] ? fromRepositoryRow(rows[0]) : null;
+    },
+    async listRepositories() {
+      const local = devStore.snapshot().repositories;
+      const rows = await db.select().from(repositories);
+      return mergeById(local, rows.map(fromRepositoryRow));
+    },
+    async getScanJob(scanJobId) {
+      const local = await devStore.getScanJob(scanJobId);
+      if (local) return local;
+
+      const rows = await db.select().from(scanJobs).where(eq(scanJobs.id, scanJobId)).limit(1);
+      return rows[0] ? fromScanJobRow(rows[0]) : null;
+    },
+    async listScanJobs() {
+      const local = devStore.snapshot().scanJobs;
+      const rows = await db.select().from(scanJobs);
+      return mergeById(local, rows.map(fromScanJobRow));
+    },
+    async hasWebhookDelivery(deliveryId) {
+      if (await devStore.hasWebhookDelivery(deliveryId)) return true;
+      const rows = await db
+        .select({ id: auditLogs.id })
+        .from(auditLogs)
+        .where(and(eq(auditLogs.action, "webhook_received"), eq(auditLogs.targetType, "github_delivery"), eq(auditLogs.targetId, deliveryId)))
+        .limit(1);
+      return rows.length > 0;
     },
     async createScanJob(input) {
       const before = getSideEffectCounts(devStore.snapshot());
@@ -279,42 +477,60 @@ function createDatabasePersistenceStore(connectionString: string): PersistenceSt
       await persistNewSideEffects(before);
       return scanJob;
     },
+    async markScanJobRunning(scanJobId) {
+      const before = getSideEffectCounts(devStore.snapshot());
+      await devStore.markScanJobRunning(scanJobId);
+      const scanJob = devStore.snapshot().scanJobs.find((candidate) => candidate.id === scanJobId);
+      await db
+        .update(scanJobs)
+        .set({
+          status: "running",
+          startedAt: scanJob?.startedAt ? new Date(scanJob.startedAt) : new Date(isoNow()),
+          completedAt: null,
+          error: null
+        })
+        .where(eq(scanJobs.id, scanJobId));
+      await persistNewSideEffects(before);
+    },
     async completeScanJob(scanJobId, summary) {
       const before = getSideEffectCounts(devStore.snapshot());
       await devStore.completeScanJob(scanJobId, summary);
-      const scanJob = devStore.snapshot().scanJobs.find((candidate) => candidate.id === scanJobId);
-      if (scanJob) {
-        await db
-          .update(scanJobs)
-          .set({
-            status: scanJob.status,
-            completedAt: scanJob.completedAt ? new Date(scanJob.completedAt) : null,
-            summary: scanJob.summary
-          })
-          .where(eq(scanJobs.id, scanJobId));
+      const localScanJob = devStore.snapshot().scanJobs.find((candidate) => candidate.id === scanJobId);
+      const persistedScanJob = localScanJob ?? (await db.select().from(scanJobs).where(eq(scanJobs.id, scanJobId)).limit(1))[0];
+      const completedAt = localScanJob?.completedAt ?? isoNow();
+      await db
+        .update(scanJobs)
+        .set({
+          status: "completed",
+          completedAt: new Date(completedAt),
+          summary,
+          error: null
+        })
+        .where(eq(scanJobs.id, scanJobId));
+
+      if (persistedScanJob) {
         await db
           .update(repositories)
           .set({
-            lastScannedAt: scanJob.completedAt ? new Date(scanJob.completedAt) : null,
+            lastScannedAt: new Date(completedAt),
             updatedAt: new Date(isoNow())
           })
-          .where(eq(repositories.id, scanJob.repositoryId));
+          .where(eq(repositories.id, persistedScanJob.repositoryId));
       }
       await persistNewSideEffects(before);
     },
-    async failScanJob(scanJobId) {
+    async failScanJob(scanJobId, error) {
       const before = getSideEffectCounts(devStore.snapshot());
-      await devStore.failScanJob(scanJobId);
+      await devStore.failScanJob(scanJobId, error);
       const scanJob = devStore.snapshot().scanJobs.find((candidate) => candidate.id === scanJobId);
-      if (scanJob) {
-        await db
-          .update(scanJobs)
-          .set({
-            status: scanJob.status,
-            completedAt: scanJob.completedAt ? new Date(scanJob.completedAt) : null
-          })
-          .where(eq(scanJobs.id, scanJobId));
-      }
+      await db
+        .update(scanJobs)
+        .set({
+          status: "failed",
+          completedAt: scanJob?.completedAt ? new Date(scanJob.completedAt) : new Date(isoNow()),
+          error: error ?? scanJob?.error ?? "AutoCyber could not complete the monitoring scan."
+        })
+        .where(eq(scanJobs.id, scanJobId));
       await persistNewSideEffects(before);
     },
     async saveFindings(input) {
@@ -325,6 +541,11 @@ function createDatabasePersistenceStore(connectionString: string): PersistenceSt
       }
       await persistNewSideEffects(before);
       return records;
+    },
+    async listFindings() {
+      const local = devStore.snapshot().findings;
+      const rows = await db.select().from(findings);
+      return mergeById(local, rows.map(fromFindingRow));
     },
     async saveFixProposal(input) {
       const before = getSideEffectCounts(devStore.snapshot());
@@ -351,6 +572,58 @@ function createDatabasePersistenceStore(connectionString: string): PersistenceSt
       await db.insert(pullRequests).values(toPullRequestRow(input) as never).onConflictDoNothing();
       await persistNewSideEffects(before);
     },
+    async createNotification(input) {
+      const before = getSideEffectCounts(devStore.snapshot());
+      const notification = await devStore.createNotification(input);
+      await db.insert(notifications).values(toNotificationRow(notification)).onConflictDoNothing();
+      await persistNewSideEffects(before);
+      return notification;
+    },
+    async listNotifications() {
+      const local = devStore.snapshot().notifications;
+      const rows = await db.select().from(notifications);
+      return mergeById(local, rows.map(fromNotificationRow)).sort((first, second) => second.createdAt.localeCompare(first.createdAt));
+    },
+    async markNotificationRead(notificationId) {
+      const before = getSideEffectCounts(devStore.snapshot());
+      const local = await devStore.markNotificationRead(notificationId);
+      let notification = local;
+      if (!notification) {
+        const existing = (await db.select().from(notifications).where(eq(notifications.id, notificationId)).limit(1))[0];
+        if (!existing) return null;
+        notification = { ...fromNotificationRow(existing), status: "read", updatedAt: isoNow() };
+      }
+      await db
+        .update(notifications)
+        .set({
+          status: "read",
+          updatedAt: new Date(notification.updatedAt)
+        })
+        .where(eq(notifications.id, notificationId));
+      if (!local) await devStore.writeAuditLog("notification_read", "notification", notificationId);
+      await persistNewSideEffects(before);
+      return notification;
+    },
+    async dismissNotification(notificationId) {
+      const before = getSideEffectCounts(devStore.snapshot());
+      const local = await devStore.dismissNotification(notificationId);
+      let notification = local;
+      if (!notification) {
+        const existing = (await db.select().from(notifications).where(eq(notifications.id, notificationId)).limit(1))[0];
+        if (!existing) return null;
+        notification = { ...fromNotificationRow(existing), status: "dismissed", updatedAt: isoNow() };
+      }
+      await db
+        .update(notifications)
+        .set({
+          status: "dismissed",
+          updatedAt: new Date(notification.updatedAt)
+        })
+        .where(eq(notifications.id, notificationId));
+      if (!local) await devStore.writeAuditLog("notification_dismissed", "notification", notificationId);
+      await persistNewSideEffects(before);
+      return notification;
+    },
     async upsertRepoProfileMemory(repositoryId, profile) {
       const before = getSideEffectCounts(devStore.snapshot());
       await devStore.upsertRepoProfileMemory(repositoryId, profile);
@@ -373,9 +646,98 @@ function getSideEffectCounts(snapshot: PersistenceSnapshot): { securityMemoryCou
   };
 }
 
+function fromRepositoryRow(repository: typeof repositories.$inferSelect): Repository {
+  return {
+    id: repository.id,
+    projectId: repository.projectId,
+    provider: repository.provider === "github" ? "github" : "local",
+    owner: repository.owner,
+    name: repository.name,
+    defaultBranch: repository.defaultBranch,
+    url: repository.url,
+    installationId: repository.installationId,
+    isPrivate: repository.isPrivate === "true",
+    connectionType: normalizeConnectionType(repository.connectionType),
+    canScan: repository.canScan !== "false",
+    canMonitor: repository.canMonitor === "true",
+    canOpenPr: repository.canOpenPr === "true",
+    permissionsSummary: repository.permissionsSummary ?? {},
+    lastScannedAt: repository.lastScannedAt ? repository.lastScannedAt.toISOString() : null,
+    createdAt: repository.createdAt.toISOString(),
+    updatedAt: repository.updatedAt.toISOString()
+  };
+}
+
+function fromScanJobRow(scanJob: typeof scanJobs.$inferSelect): ScanJob {
+  return {
+    id: scanJob.id,
+    repositoryId: scanJob.repositoryId,
+    status: scanJob.status as ScanJob["status"],
+    source: scanJob.source as ScanJob["source"],
+    branch: scanJob.branch,
+    commitSha: scanJob.commitSha,
+    webhookDeliveryId: scanJob.webhookDeliveryId,
+    pullRequestNumber: scanJob.pullRequestNumber,
+    error: scanJob.error,
+    startedAt: scanJob.startedAt ? scanJob.startedAt.toISOString() : null,
+    completedAt: scanJob.completedAt ? scanJob.completedAt.toISOString() : null,
+    summary: {
+      critical: Number(scanJob.summary.critical ?? 0),
+      high: Number(scanJob.summary.high ?? 0),
+      medium: Number(scanJob.summary.medium ?? 0),
+      low: Number(scanJob.summary.low ?? 0),
+      info: Number(scanJob.summary.info ?? 0)
+    }
+  };
+}
+
+function fromFindingRow(finding: typeof findings.$inferSelect): Finding {
+  return {
+    id: finding.id,
+    scanJobId: finding.scanJobId,
+    repositoryId: finding.repositoryId,
+    ruleId: finding.ruleId,
+    title: finding.title,
+    category: finding.category,
+    severity: finding.severity as Finding["severity"],
+    confidence: finding.confidence,
+    status: finding.status as Finding["status"],
+    stackTags: finding.stackTags as Finding["stackTags"],
+    affectedFile: finding.affectedFile,
+    evidence: finding.evidence as Finding["evidence"],
+    riskExplanation: finding.riskExplanation,
+    remediationSummary: finding.remediationSummary,
+    verificationStrategy: finding.verificationStrategy,
+    autofixAvailable: finding.autofixAvailable === "true",
+    createdAt: finding.createdAt.toISOString(),
+    updatedAt: finding.updatedAt.toISOString()
+  };
+}
+
+function fromNotificationRow(notification: typeof notifications.$inferSelect): Notification {
+  return {
+    id: notification.id,
+    teamId: notification.teamId,
+    repositoryId: notification.repositoryId,
+    scanJobId: notification.scanJobId,
+    findingId: notification.findingId,
+    type: notification.type as Notification["type"],
+    severity: notification.severity as Notification["severity"],
+    title: notification.title,
+    message: notification.message,
+    status: notification.status as Notification["status"],
+    createdAt: notification.createdAt.toISOString(),
+    updatedAt: notification.updatedAt.toISOString()
+  };
+}
+
 function toRepositoryRow(repository: Repository) {
   return {
     ...repository,
+    isPrivate: String(repository.isPrivate),
+    canScan: String(repository.canScan),
+    canMonitor: String(repository.canMonitor),
+    canOpenPr: String(repository.canOpenPr),
     lastScannedAt: repository.lastScannedAt ? new Date(repository.lastScannedAt) : null,
     createdAt: new Date(repository.createdAt),
     updatedAt: new Date(repository.updatedAt)
@@ -423,6 +785,14 @@ function toPullRequestRow(pullRequest: PullRequestRecord) {
   };
 }
 
+function toNotificationRow(notification: Notification) {
+  return {
+    ...notification,
+    createdAt: new Date(notification.createdAt),
+    updatedAt: new Date(notification.updatedAt)
+  };
+}
+
 function toMemoryRow(memory: SecurityMemory) {
   return {
     ...memory,
@@ -444,6 +814,74 @@ function upsertById<T extends { id: string }>(records: T[], input: T): void {
   const index = records.findIndex((record) => record.id === input.id);
   if (index === -1) records.push(input);
   else records[index] = input;
+}
+
+function mergeById<T extends { id: string }>(first: T[], second: T[]): T[] {
+  const records = new Map<string, T>();
+  for (const record of first) records.set(record.id, record);
+  for (const record of second) records.set(record.id, record);
+  return Array.from(records.values());
+}
+
+function getRepositoryCapabilityDefaults(input: RepositoryInput): Pick<Repository, "connectionType" | "canScan" | "canMonitor" | "canOpenPr" | "permissionsSummary"> {
+  if (input.provider === "local") {
+    return {
+      connectionType: "local",
+      canScan: true,
+      canMonitor: false,
+      canOpenPr: false,
+      permissionsSummary: {
+        mode: "local_development"
+      }
+    };
+  }
+
+  if (input.installationId) {
+    return {
+      connectionType: "github_app",
+      canScan: true,
+      canMonitor: true,
+      canOpenPr: false,
+      permissionsSummary: {
+        contents: "read",
+        pullRequests: "unknown"
+      }
+    };
+  }
+
+  return {
+    connectionType: "public_github",
+    canScan: true,
+    canMonitor: false,
+    canOpenPr: false,
+    permissionsSummary: {
+      contents: "public_read",
+      pullRequests: "none"
+    }
+  };
+}
+
+function applyRepositoryInput(repository: Repository, input: RepositoryInput): Repository {
+  const defaults = getRepositoryCapabilityDefaults(input);
+  return {
+    ...repository,
+    projectId: input.projectId,
+    defaultBranch: input.defaultBranch,
+    url: input.url,
+    installationId: input.installationId ?? repository.installationId,
+    isPrivate: input.isPrivate ?? repository.isPrivate,
+    connectionType: input.connectionType ?? repository.connectionType ?? defaults.connectionType,
+    canScan: input.canScan ?? repository.canScan ?? defaults.canScan,
+    canMonitor: input.canMonitor ?? repository.canMonitor ?? defaults.canMonitor,
+    canOpenPr: input.canOpenPr ?? repository.canOpenPr ?? defaults.canOpenPr,
+    permissionsSummary: input.permissionsSummary ?? repository.permissionsSummary ?? defaults.permissionsSummary,
+    updatedAt: isoNow()
+  };
+}
+
+function normalizeConnectionType(value: string): Repository["connectionType"] {
+  if (value === "github_app" || value === "public_github" || value === "token_dev") return value;
+  return "local";
 }
 
 function createId(prefix: string): string {

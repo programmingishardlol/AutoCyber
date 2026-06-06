@@ -47,6 +47,13 @@ export const repositories = pgTable("repositories", {
   name: text("name").notNull(),
   defaultBranch: text("default_branch").notNull(),
   url: text("url").notNull(),
+  installationId: text("installation_id"),
+  isPrivate: text("is_private").notNull().default("false"),
+  connectionType: text("connection_type").notNull().default("local"),
+  canScan: text("can_scan").notNull().default("true"),
+  canMonitor: text("can_monitor").notNull().default("false"),
+  canOpenPr: text("can_open_pr").notNull().default("false"),
+  permissionsSummary: jsonb("permissions_summary").$type<Record<string, string | boolean | null>>().notNull().default({}),
   lastScannedAt: timestamp("last_scanned_at", { withTimezone: true }),
   ...timestamps
 });
@@ -58,6 +65,9 @@ export const scanJobs = pgTable("scan_jobs", {
   source: text("source").notNull(),
   branch: text("branch").notNull(),
   commitSha: text("commit_sha").notNull(),
+  webhookDeliveryId: text("webhook_delivery_id"),
+  pullRequestNumber: integer("pull_request_number"),
+  error: text("error"),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   summary: jsonb("summary").$type<Record<string, number>>().notNull()
@@ -141,5 +151,19 @@ export const securityMemories = pgTable("security_memories", {
   content: text("content").notNull(),
   source: text("source").notNull(),
   confidence: text("confidence").notNull(),
+  ...timestamps
+});
+
+export const notifications = pgTable("notifications", {
+  id: text("id").primaryKey(),
+  teamId: text("team_id").notNull(),
+  repositoryId: text("repository_id").notNull(),
+  scanJobId: text("scan_job_id"),
+  findingId: text("finding_id"),
+  type: text("type").notNull(),
+  severity: text("severity").notNull(),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  status: text("status").notNull(),
   ...timestamps
 });
