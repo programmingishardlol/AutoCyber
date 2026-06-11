@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MonitoringHistoryItem } from "./monitoring-history";
-import { summarizeMonitoringHistory } from "./monitoring-history";
+import { getMonitoringHistory, summarizeMonitoringHistory } from "./monitoring-history";
+import { createDevPersistenceStore } from "./persistence/store";
 
 describe("monitoring history display helpers", () => {
   it("summarizes queued, running, completed, and failed scan states", () => {
@@ -23,6 +24,55 @@ describe("monitoring history display helpers", () => {
     });
     expect(summary.findingCount).toBe(3);
     expect(summary.hasFailures).toBe(true);
+  });
+
+  it("sorts queued and running webhook scans ahead of older completed scans", async () => {
+    const store = createDevPersistenceStore();
+    const repository = await store.upsertRepository({
+      projectId: "proj_dev",
+      provider: "github",
+      owner: "programmingishardlol",
+      name: "autocyber-private-stage6-test",
+      defaultBranch: "main",
+      url: "https://github.com/programmingishardlol/autocyber-private-stage6-test",
+      installationId: "123456",
+      isPrivate: true,
+      connectionType: "github_app",
+      canScan: true,
+      canMonitor: true,
+      canOpenPr: false,
+    });
+    const completed = await store.createScanJob({
+      repositoryId: repository.id,
+      source: "manual",
+      branch: "main",
+      commitSha: "completed",
+      status: "running",
+    });
+    await store.completeScanJob(completed.id, {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      info: 0,
+    });
+    const queued = await store.createScanJob({
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "queued",
+      webhookDeliveryId: "delivery-queued",
+      status: "queued",
+    });
+
+    const history = await getMonitoringHistory(store);
+
+    expect(history[0]).toMatchObject({
+      id: queued.id,
+      status: "queued",
+      source: "push",
+      webhookDeliveryId: "delivery-queued",
+    });
   });
 });
 

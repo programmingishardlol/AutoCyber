@@ -62,8 +62,23 @@ describe("Stage 5D persistence store", () => {
     ]);
   });
 
-  it("persists GitHub App installation metadata on repository records", async () => {
+  it("persists GitHub App installation metadata separately from repository records", async () => {
     const store = createDevPersistenceStore();
+    const installation = await store.upsertGitHubInstallation({
+      installationId: "123456",
+      teamId: "team_dev",
+      userId: "user_dev",
+      accountLogin: "openai",
+      accountType: "github_account",
+      status: "connected",
+      repositorySelection: "selected",
+      repositoryCount: 1,
+      permissionsSummary: {
+        contents: "write",
+        pullRequests: "write",
+        githubAppPrCreationImplemented: false
+      }
+    });
     const repository = await store.upsertRepository({
       projectId: "proj_demo",
       provider: "github",
@@ -75,13 +90,122 @@ describe("Stage 5D persistence store", () => {
       isPrivate: true
     });
 
+    expect(installation).toMatchObject({
+      installationId: "123456",
+      teamId: "team_dev",
+      userId: "user_dev",
+      status: "connected",
+      repositoryCount: 1
+    });
     expect(repository).toMatchObject({
       installationId: "123456",
       isPrivate: true
     });
+    await expect(store.getGitHubInstallation("123456")).resolves.toMatchObject({
+      accountLogin: "openai",
+      permissionsSummary: expect.objectContaining({
+        contents: "write",
+        githubAppPrCreationImplemented: false
+      })
+    });
     await expect(store.findGitHubRepository("openai", "private-codex")).resolves.toMatchObject({
       installationId: "123456",
       isPrivate: true
+    });
+  });
+
+  it("does not downgrade installed GitHub App repositories when a later public URL scan upserts the same repo", async () => {
+    const store = createDevPersistenceStore();
+    const installedRepository = await store.upsertRepository({
+      projectId: "proj_demo",
+      provider: "github",
+      owner: "openai",
+      name: "private-codex",
+      defaultBranch: "main",
+      url: "https://github.com/openai/private-codex",
+      installationId: "123456",
+      isPrivate: true,
+      connectionType: "github_app",
+      canScan: true,
+      canMonitor: true,
+      canOpenPr: false,
+      permissionsSummary: {
+        contents: "read",
+        pullRequests: "read"
+      }
+    });
+
+    const updatedRepository = await store.upsertRepository({
+      projectId: "proj_demo",
+      provider: "github",
+      owner: "openai",
+      name: "private-codex",
+      defaultBranch: "main",
+      url: "https://github.com/openai/private-codex",
+      connectionType: "public_github",
+      canScan: true,
+      canMonitor: false,
+      canOpenPr: false,
+      isPrivate: false,
+      permissionsSummary: {
+        contents: "public_read",
+        pullRequests: "none"
+      }
+    });
+
+    expect(updatedRepository.id).toBe(installedRepository.id);
+    expect(updatedRepository).toMatchObject({
+      connectionType: "github_app",
+      installationId: "123456",
+      isPrivate: true,
+      canScan: true,
+      canMonitor: true,
+      canOpenPr: false
+    });
+  });
+
+  it("uses canonical GitHub identity so public and GitHub App rows for the same repo do not duplicate", async () => {
+    const store = createDevPersistenceStore();
+    const publicRepository = await store.upsertRepository({
+      projectId: "proj_demo",
+      provider: "github",
+      owner: "OpenAI",
+      name: "Codex",
+      defaultBranch: "main",
+      url: "https://github.com/OpenAI/Codex",
+      connectionType: "public_github",
+      canScan: true,
+      canMonitor: false,
+      canOpenPr: false,
+      isPrivate: false
+    });
+    const installedRepository = await store.upsertRepository({
+      projectId: "proj_demo",
+      provider: "github",
+      owner: "openai",
+      name: "codex",
+      defaultBranch: "main",
+      url: "https://github.com/openai/codex",
+      installationId: "123456",
+      isPrivate: true,
+      connectionType: "github_app",
+      canScan: true,
+      canMonitor: true,
+      canOpenPr: false,
+      permissionsSummary: {
+        contents: "read",
+        connectionStatus: "connected"
+      }
+    });
+
+    expect(installedRepository.id).toBe(publicRepository.id);
+    expect(store.snapshot().repositories).toHaveLength(1);
+    expect(await store.findGitHubRepository("OPENAI", "CODEX")).toMatchObject({
+      id: publicRepository.id,
+      connectionType: "github_app",
+      installationId: "123456",
+      isPrivate: true,
+      canMonitor: true
     });
   });
 

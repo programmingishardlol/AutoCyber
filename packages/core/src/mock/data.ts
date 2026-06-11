@@ -66,10 +66,12 @@ export const mockRepositories: Repository[] = [
     connectionType: "github_app",
     canScan: true,
     canMonitor: true,
-    canOpenPr: true,
+    canOpenPr: false,
     permissionsSummary: {
       contents: "write",
-      pullRequests: "write"
+      pullRequests: "write",
+      pullRequestWriteGranted: true,
+      githubAppPrCreationImplemented: false
     },
     lastScannedAt: "2026-05-26T08:30:00.000Z",
     createdAt: now,

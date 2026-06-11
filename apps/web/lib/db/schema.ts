@@ -58,6 +58,20 @@ export const repositories = pgTable("repositories", {
   ...timestamps
 });
 
+export const githubInstallations = pgTable("github_installations", {
+  id: text("id").primaryKey(),
+  installationId: text("installation_id").notNull().unique(),
+  teamId: text("team_id").notNull(),
+  userId: text("user_id").notNull(),
+  accountLogin: text("account_login").notNull(),
+  accountType: text("account_type").notNull(),
+  status: text("status").notNull().default("connected"),
+  repositorySelection: text("repository_selection").notNull().default("selected"),
+  repositoryCount: integer("repository_count").notNull().default(0),
+  permissionsSummary: jsonb("permissions_summary").$type<Record<string, string | boolean | null>>().notNull().default({}),
+  ...timestamps
+});
+
 export const scanJobs = pgTable("scan_jobs", {
   id: text("id").primaryKey(),
   repositoryId: text("repository_id").notNull(),

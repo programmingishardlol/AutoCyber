@@ -4,6 +4,7 @@ export const databaseTables = [
   "team_memberships",
   "projects",
   "repositories",
+  "github_installations",
   "scan_jobs",
   "findings",
   "fix_proposals",
@@ -11,6 +12,7 @@ export const databaseTables = [
   "pull_requests",
   "integrations",
   "security_memories",
+  "notifications",
   "workflow_playbooks",
   "audit_logs"
 ] as const;
@@ -23,6 +25,7 @@ export const stageZeroSchemaNotes: Record<DatabaseTable, string> = {
   team_memberships: "Associates users with teams without overbuilding roles.",
   projects: "Customer-facing app or product under security review.",
   repositories: "Source repository metadata; no integration tokens are stored here.",
+  github_installations: "GitHub App installation metadata and permissions; no short-lived installation tokens are stored here.",
   scan_jobs: "Historical scan execution records and normalized summary counts.",
   findings: "Normalized security issues with evidence and remediation guidance.",
   fix_proposals: "Human-reviewable remediation plans and diff previews.",
@@ -30,6 +33,7 @@ export const stageZeroSchemaNotes: Record<DatabaseTable, string> = {
   pull_requests: "PR metadata only; real creation starts in Stage 4.",
   integrations: "Connection state for startup-stack providers.",
   security_memories: "Repo-aware decisions, false positives, and preferences.",
+  notifications: "Internal product alerts for monitoring events.",
   workflow_playbooks: "Opinionated secure workflow templates.",
   audit_logs: "Team-scoped activity trail for trust and accountability."
 };

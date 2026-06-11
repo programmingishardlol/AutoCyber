@@ -5,6 +5,7 @@ node_modules
 dist
 coverage
 *.tsbuildinfo
+.superpowers/
 
 # Private project notes and agent instructions.
 # Keep README.md public, but do not publish local planning/context docs.

@@ -1,8 +1,6 @@
 import { createHmac } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { handleGitHubWebhook } from "../../../../lib/github-webhook-handler";
 import { getPersistenceStore } from "../../../../lib/persistence/store";
 import { POST } from "./route";
 
@@ -23,17 +21,82 @@ describe("GitHub webhook API route", () => {
     globalThis.__autocyberPersistenceStore = undefined;
   });
 
-  it("accepts a valid push signature and creates a queued monitoring scan", async () => {
+  it("accepts a valid push signature and processes a monitoring scan by default", async () => {
     await seedGitHubRepository();
     const payload = pushPayload({
       deliverySuffix: "push-valid",
       sha: "abc123push",
     });
 
-    const response = await POST(
+    const response = await handleGitHubWebhook(
       signedRequest(payload, {
         event: "push",
         delivery: "delivery-push-valid",
+      }),
+      {
+        processScanJob: async (store, scanJobId) => {
+          const scanJob = await store.getScanJob(scanJobId);
+          await store.markScanJobRunning(scanJobId);
+          await store.saveFindings([stubFinding(scanJob!.repositoryId, scanJobId)]);
+          await store.upsertRepoProfileMemory(scanJob!.repositoryId, stubProjectProfile());
+          await store.completeScanJob(scanJobId, { critical: 0, high: 1, medium: 0, low: 0, info: 0 });
+          await store.writeAuditLog("monitoring_scan_completed", "scan_job", scanJobId);
+          await store.createNotification({
+            repositoryId: scanJob!.repositoryId,
+            scanJobId,
+            findingId: null,
+            type: "webhook_scan_completed",
+            severity: "info",
+            title: "Webhook scan completed",
+            message: "AutoCyber completed a push-triggered scan."
+          });
+          return { status: "completed", scanJobId, findings: 1 };
+        }
+      },
+    );
+    const body = await response.json();
+    const snapshot = getPersistenceStore().snapshot();
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("completed");
+    expect(body.scanJob.source).toBe("push");
+    expect(body.scanJob.commitSha).toBe("abc123push");
+    expect(body.findings).toBeGreaterThan(0);
+    expect(snapshot.scanJobs.at(-1)).toMatchObject({
+      status: "completed",
+      source: "push",
+      branch: "main",
+      commitSha: "abc123push",
+      webhookDeliveryId: "delivery-push-valid",
+      pullRequestNumber: null,
+    });
+    expect(snapshot.findings.length).toBeGreaterThan(0);
+    expect(snapshot.notifications.map((notification) => notification.type)).toContain("webhook_scan_completed");
+    expect(snapshot.securityMemories.length).toBeGreaterThan(0);
+    expect(snapshot.auditLogs.map((log) => log.action)).toEqual(
+      expect.arrayContaining([
+        "webhook_signature_validated",
+        "webhook_received",
+        "scan_queued",
+        "scan_running",
+        "monitoring_scan_completed",
+      ]),
+    );
+    expect(JSON.stringify(body)).not.toContain(webhookSecret);
+  });
+
+  it("preserves queue-only push behavior when explicitly configured", async () => {
+    vi.stubEnv("AUTOCYBER_WEBHOOK_EXECUTION_MODE", "queued");
+    await seedGitHubRepository();
+    const payload = pushPayload({
+      deliverySuffix: "push-queued",
+      sha: "abc123queued",
+    });
+
+    const response = await POST(
+      signedRequest(payload, {
+        event: "push",
+        delivery: "delivery-push-queued",
       }),
     );
     const body = await response.json();
@@ -41,27 +104,14 @@ describe("GitHub webhook API route", () => {
 
     expect(response.status).toBe(202);
     expect(body.status).toBe("queued");
-    expect(body.scanJob.source).toBe("push");
-    expect(body.scanJob.commitSha).toBe("abc123push");
-    expect(body.findings).toBeUndefined();
     expect(snapshot.scanJobs.at(-1)).toMatchObject({
       status: "queued",
       source: "push",
-      branch: "main",
-      commitSha: "abc123push",
-      webhookDeliveryId: "delivery-push-valid",
-      pullRequestNumber: null,
+      commitSha: "abc123queued",
+      webhookDeliveryId: "delivery-push-queued",
     });
     expect(snapshot.findings).toHaveLength(0);
-    expect(snapshot.securityMemories).toHaveLength(0);
-    expect(snapshot.auditLogs.map((log) => log.action)).toEqual(
-      expect.arrayContaining([
-        "webhook_signature_validated",
-        "webhook_received",
-        "scan_queued",
-      ]),
-    );
-    expect(JSON.stringify(body)).not.toContain(webhookSecret);
+    expect(snapshot.notifications).toHaveLength(0);
   });
 
   it("accepts a valid pull_request signature and stores PR scan metadata", async () => {
@@ -91,6 +141,61 @@ describe("GitHub webhook API route", () => {
       webhookDeliveryId: "delivery-pr-valid",
       pullRequestNumber: 42,
     });
+  });
+
+  it("maps webhooks for multiple repos under one installation to the correct repository rows", async () => {
+    const repoA = await seedInstalledGitHubRepository("repo-a");
+    const repoB = await seedInstalledGitHubRepository("repo-b");
+
+    const responseA = await handleGitHubWebhook(
+      signedRequest(pushPayload({ deliverySuffix: "repo-a", sha: "sha-a", owner: "acme", name: "repo-a" }), {
+        event: "push",
+        delivery: "delivery-repo-a",
+      }),
+      {
+        processScanJob: async (store, scanJobId) => {
+          await store.markScanJobRunning(scanJobId);
+          await store.completeScanJob(scanJobId, { critical: 0, high: 0, medium: 0, low: 0, info: 0 });
+          return { status: "completed", scanJobId, findings: 0 };
+        }
+      },
+    );
+    const responseB = await POST(
+      signedRequest(pullRequestPayload({ number: 7, sha: "sha-b", branch: "feature/b", owner: "acme", name: "repo-b" }), {
+        event: "pull_request",
+        delivery: "delivery-repo-b",
+      }),
+    );
+    const unknownResponse = await POST(
+      signedRequest(pushPayload({ deliverySuffix: "repo-c", sha: "sha-c", owner: "acme", name: "repo-c" }), {
+        event: "push",
+        delivery: "delivery-repo-c",
+      }),
+    );
+    const snapshot = getPersistenceStore().snapshot();
+
+    expect(responseA.status).toBe(200);
+    expect(responseB.status).toBe(202);
+    expect(unknownResponse.status).toBe(404);
+    expect(snapshot.scanJobs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          repositoryId: repoA.id,
+          source: "push",
+          status: "completed",
+          commitSha: "sha-a",
+          webhookDeliveryId: "delivery-repo-a",
+        }),
+        expect.objectContaining({
+          repositoryId: repoB.id,
+          source: "pull_request",
+          status: "queued",
+          commitSha: "sha-b",
+          pullRequestNumber: 7,
+          webhookDeliveryId: "delivery-repo-b",
+        }),
+      ]),
+    );
   });
 
   it("stores private repository webhook scans with installation mapping metadata", async () => {
@@ -127,70 +232,53 @@ describe("GitHub webhook API route", () => {
     });
   });
 
-  it("queues private repository push webhooks without exposing installation secrets", async () => {
+  it("processes private repository push webhooks without exposing installation secrets", async () => {
     await seedPrivateGitHubRepository();
     const payload = pushPayload({
       deliverySuffix: "private-push",
       sha: "privatepush123",
     });
 
-    const response = await POST(
+    const response = await handleGitHubWebhook(
       signedRequest(payload, {
         event: "push",
         delivery: "delivery-private-push",
       }),
+      {
+        processScanJob: async (store, scanJobId) => {
+          const scanJob = await store.getScanJob(scanJobId);
+          await store.markScanJobRunning(scanJobId);
+          await store.completeScanJob(scanJobId, { critical: 0, high: 0, medium: 0, low: 0, info: 0 });
+          await store.createNotification({
+            repositoryId: scanJob!.repositoryId,
+            scanJobId,
+            findingId: null,
+            type: "webhook_scan_completed",
+            severity: "info",
+            title: "Webhook scan completed",
+            message: "AutoCyber completed a push-triggered scan."
+          });
+          return { status: "completed", scanJobId, findings: 0 };
+        }
+      },
     );
     const body = await response.json();
     const snapshot = getPersistenceStore().snapshot();
 
-    expect(response.status).toBe(202);
+    expect(response.status).toBe(200);
     expect(body.scanJob.source).toBe("push");
+    expect(body.status).toBe("completed");
     expect(snapshot.scanJobs.at(-1)).toMatchObject({
-      status: "queued",
+      status: "completed",
       source: "push",
       branch: "main",
       commitSha: "privatepush123",
       webhookDeliveryId: "delivery-private-push",
       pullRequestNumber: null,
     });
+    expect(snapshot.notifications.map((notification) => notification.type)).toContain("webhook_scan_completed");
     expect(JSON.stringify(body)).not.toContain("123456");
     expect(JSON.stringify(snapshot.auditLogs)).not.toContain("123456");
-  });
-
-  it("can run inline only when explicitly configured for local development", async () => {
-    const clonedRepo = await createVulnerableClone();
-    vi.stubEnv("AUTOCYBER_TEST_GITHUB_CLONE_PATH", clonedRepo);
-    vi.stubEnv("AUTOCYBER_WEBHOOK_EXECUTION_MODE", "inline");
-    await seedGitHubRepository();
-    const payload = pushPayload({
-      deliverySuffix: "inline",
-      sha: "abc123inline",
-    });
-
-    const response = await POST(
-      signedRequest(payload, { event: "push", delivery: "delivery-inline" }),
-    );
-    const body = await response.json();
-    const snapshot = getPersistenceStore().snapshot();
-
-    expect(response.status).toBe(200);
-    expect(body.status).toBe("completed");
-    expect(body.findings).toBeGreaterThan(0);
-    expect(snapshot.scanJobs.at(-1)).toMatchObject({
-      status: "completed",
-      source: "push",
-      commitSha: "abc123inline",
-      webhookDeliveryId: "delivery-inline",
-    });
-    expect(snapshot.findings.length).toBeGreaterThan(0);
-    expect(snapshot.auditLogs.map((log) => log.action)).toEqual(
-      expect.arrayContaining([
-        "scan_queued",
-        "scan_running",
-        "monitoring_scan_started",
-        "monitoring_scan_completed",
-      ]),
-    );
   });
 
   it("rejects invalid signatures before processing payloads", async () => {
@@ -322,8 +410,6 @@ describe("GitHub webhook API route", () => {
   });
 
   it("handles duplicate deliveries without creating another scan job", async () => {
-    const clonedRepo = await createVulnerableClone();
-    vi.stubEnv("AUTOCYBER_TEST_GITHUB_CLONE_PATH", clonedRepo);
     await seedGitHubRepository();
     const payload = pushPayload({
       deliverySuffix: "duplicate",
@@ -334,17 +420,24 @@ describe("GitHub webhook API route", () => {
       delivery: "delivery-duplicate",
     });
 
-    const firstResponse = await POST(request);
+    const firstResponse = await handleGitHubWebhook(request, {
+      processScanJob: async (store, scanJobId) => {
+        await store.markScanJobRunning(scanJobId);
+        await store.completeScanJob(scanJobId, { critical: 0, high: 0, medium: 0, low: 0, info: 0 });
+        return { status: "completed", scanJobId, findings: 0 };
+      }
+    });
     const secondResponse = await POST(
       signedRequest(payload, { event: "push", delivery: "delivery-duplicate" }),
     );
     const secondBody = await secondResponse.json();
     const snapshot = getPersistenceStore().snapshot();
 
-    expect(firstResponse.status).toBe(202);
+    expect(firstResponse.status).toBe(200);
     expect(secondResponse.status).toBe(200);
     expect(secondBody.status).toBe("duplicate_ignored");
     expect(snapshot.scanJobs).toHaveLength(1);
+    expect(snapshot.auditLogs.map((log) => log.action)).toContain("webhook_duplicate_ignored");
   });
 });
 
@@ -372,25 +465,26 @@ async function seedPrivateGitHubRepository() {
   });
 }
 
-async function createVulnerableClone(): Promise<string> {
-  const clonedRepo = await mkdtemp(join(tmpdir(), "autocyber-webhook-clone-"));
-  await writeFile(
-    join(clonedRepo, "package.json"),
-    JSON.stringify({ dependencies: { next: "latest" } }),
-  );
-  await writeFile(
-    join(clonedRepo, ".env"),
-    envLine("OPENAI_API_KEY", fakeOpenAiKey("webhooktest")),
-  );
-  return clonedRepo;
-}
-
-function envLine(name: string, value: string): string {
-  return `${name}=${value}`;
-}
-
-function fakeOpenAiKey(label: string): string {
-  return ["sk", "proj", `${label}000000000000000000000000000000`].join("-");
+async function seedInstalledGitHubRepository(name: string) {
+  return getPersistenceStore().upsertRepository({
+    projectId: "proj_dev",
+    provider: "github",
+    owner: "acme",
+    name,
+    defaultBranch: "main",
+    url: `https://github.com/acme/${name}`,
+    installationId: "123456",
+    isPrivate: true,
+    connectionType: "github_app",
+    canScan: true,
+    canMonitor: true,
+    canOpenPr: false,
+    permissionsSummary: {
+      contents: "read",
+      pullRequests: "read",
+      githubAppPrCreationImplemented: false,
+    },
+  });
 }
 
 function signedRequest(
@@ -420,13 +514,13 @@ function signBody(rawBody: string): string {
   return `sha256=${createHmac("sha256", webhookSecret).update(rawBody).digest("hex")}`;
 }
 
-function pushPayload(input: { deliverySuffix: string; sha?: string }) {
+function pushPayload(input: { deliverySuffix: string; sha?: string; owner?: string; name?: string }) {
   const sha = input.sha ?? `sha-${input.deliverySuffix}`;
   return {
     ref: "refs/heads/main",
     after: sha,
     head_commit: { id: sha },
-    repository: repositoryPayload(),
+    repository: repositoryPayload(input),
   };
 }
 
@@ -434,6 +528,8 @@ function pullRequestPayload(input: {
   number: number;
   sha: string;
   branch: string;
+  owner?: string;
+  name?: string;
 }) {
   return {
     action: "opened",
@@ -445,20 +541,60 @@ function pullRequestPayload(input: {
         sha: input.sha,
       },
     },
-    repository: repositoryPayload(),
+    repository: repositoryPayload(input),
   };
 }
 
-function repositoryPayload() {
+function repositoryPayload(input: { owner?: string; name?: string } = {}) {
+  const owner = input.owner ?? "programmingishardlol";
+  const name = input.name ?? "autocyber-stage4-test";
   return {
-    name: "autocyber-stage4-test",
-    full_name: "programmingishardlol/autocyber-stage4-test",
+    name,
+    full_name: `${owner}/${name}`,
     clone_url:
-      "https://github.com/programmingishardlol/autocyber-stage4-test.git",
-    html_url: "https://github.com/programmingishardlol/autocyber-stage4-test",
+      `https://github.com/${owner}/${name}.git`,
+    html_url: `https://github.com/${owner}/${name}`,
     default_branch: "main",
     owner: {
-      login: "programmingishardlol",
+      login: owner,
     },
+  };
+}
+
+function stubProjectProfile() {
+  return {
+    frameworks: ["nextjs"],
+    languages: ["typescript"],
+    integrations: [],
+    deploymentProviders: [],
+    packageManagers: ["pnpm"],
+  };
+}
+
+function stubFinding(repositoryId: string, scanJobId: string) {
+  return {
+    id: `${scanJobId}:local:missing-api-auth:test`,
+    repositoryId,
+    scanJobId,
+    ruleId: "missing-api-auth" as const,
+    title: "API route does not enforce authentication",
+    category: "missing-auth",
+    severity: "high" as const,
+    confidence: 0.84,
+    status: "open" as const,
+    stackTags: ["nextjs" as const],
+    affectedFile: "app/api/users/route.ts",
+    evidence: [
+      {
+        filePath: "app/api/users/route.ts",
+        startLine: 1,
+        endLine: 1,
+        snippet: "export async function GET() {}",
+      },
+    ],
+    riskExplanation: "Sensitive API routes need server-side user checks.",
+    remediationSummary: "Require server-side authentication.",
+    verificationStrategy: "Rerun scanner.",
+    autofixAvailable: true,
   };
 }

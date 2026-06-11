@@ -32,6 +32,12 @@ export default async function ScansPage() {
         <SummaryStat label="Failed" value={String(summary.byStatus.failed)} tone={summary.hasFailures ? "warning" : "default"} />
       </div>
 
+      {summary.byStatus.queued > 0 ? (
+        <section className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+          Queued webhook scans are waiting for the queue worker. Run the protected queue worker endpoint to process pending push and pull request scans.
+        </section>
+      ) : null}
+
       {history.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border bg-white p-8 text-sm text-slate-600">
           No monitoring scans have been recorded yet. Connect a GitHub repository and send a signed webhook event to create queued scans.

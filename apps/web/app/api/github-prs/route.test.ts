@@ -232,4 +232,49 @@ describe("GitHub PR API route", () => {
     expect(body.message).toBe("Connect GitHub with PR permissions before AutoCyber can open a remediation PR.");
     expect(JSON.stringify(body)).not.toContain("github_pat_");
   });
+
+  it("blocks GitHub App repositories even when write permissions are recorded until App PR creation exists", async () => {
+    await getPersistenceStore().upsertRepository({
+      projectId: "proj_dev",
+      provider: "github",
+      owner: "example",
+      name: "app-installed",
+      defaultBranch: "main",
+      url: "https://github.com/example/app-installed",
+      installationId: "123456",
+      connectionType: "github_app",
+      canScan: true,
+      canMonitor: true,
+      canOpenPr: false,
+      isPrivate: true,
+      permissionsSummary: {
+        contents: "write",
+        pullRequests: "write",
+        pullRequestWriteGranted: true,
+        githubAppPrCreationImplemented: false
+      }
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/github-prs", {
+        method: "POST",
+        body: JSON.stringify({
+          proposal: { ...proposal, repositoryId: "repo_app_installed" },
+          execution: { ...execution, repositoryId: "repo_app_installed" },
+          target: {
+            owner: "example",
+            repo: "app-installed",
+            defaultBranch: "main",
+            tokenMode: "github-app"
+          }
+        })
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(body.error).toBe("GitHub connection required");
+    expect(body.message).toBe("Connect GitHub with PR permissions before AutoCyber can open a remediation PR.");
+    expect(JSON.stringify(body)).not.toContain("123456");
+  });
 });

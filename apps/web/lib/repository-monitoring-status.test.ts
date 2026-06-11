@@ -28,9 +28,9 @@ const baseRepository: Repository = {
 describe("repository monitoring status", () => {
   it("marks public GitHub repositories without webhook connection as scan-only", () => {
     expect(getRepositoryMonitoringStatus(baseRepository)).toEqual({
-      label: "Public scan enabled",
+      label: "One-time public scan",
       tone: "warning",
-      detail: "Public GitHub URL scans work without a token. Monitoring and PR remediation need a GitHub connection."
+      detail: "Public GitHub URL scans work without a token, but continuous monitoring and PR remediation require a GitHub App connection."
     });
   });
 
@@ -54,8 +54,38 @@ describe("repository monitoring status", () => {
     ).toEqual({
       label: "Private monitoring enabled",
       tone: "success",
-      detail: "GitHub App installation ID is present for private repository fetches."
+      detail: "GitHub App installation ID is present for private repository fetches. GitHub App PR remediation is not implemented yet."
     });
+  });
+
+  it("treats an installation id as a GitHub App connection even when old public scan fields are stale", () => {
+    expect(
+      getRepositoryMonitoringStatus({
+        ...baseRepository,
+        installationId: "12345",
+        connectionType: "public_github",
+        canMonitor: false
+      })
+    ).toEqual({
+      label: "Public monitoring enabled",
+      tone: "success",
+      detail: "GitHub App monitoring is connected for this public repository. GitHub App PR remediation is not implemented yet."
+    });
+
+    expect(
+      getRepositoryCapabilityBadges({
+        ...baseRepository,
+        installationId: "12345",
+        connectionType: "public_github",
+        canMonitor: false
+      }).map((badge) => badge.label)
+    ).toEqual([
+      "Scan enabled",
+      "Monitoring enabled",
+      "PR remediation disabled",
+      "GitHub App installed",
+      "Private repo support disabled"
+    ]);
   });
 
   it("renders capability badges for scan, monitoring, PR remediation, GitHub App, and private support", () => {
@@ -76,10 +106,40 @@ describe("repository monitoring status", () => {
     expect(badges.map((badge) => badge.label)).toEqual([
       "Scan enabled",
       "Monitoring enabled",
-      "PR remediation enabled",
+      "PR remediation disabled",
       "GitHub App installed",
       "Private repo support enabled"
     ]);
-    expect(badges.every((badge) => badge.tone === "success")).toBe(true);
+    expect(badges.map((badge) => badge.tone)).toEqual(["success", "success", "warning", "success", "success"]);
+  });
+
+  it("shows access-removed repositories as disconnected everywhere", () => {
+    const repository: Repository = {
+      ...baseRepository,
+      installationId: "12345",
+      connectionType: "github_app",
+      canScan: false,
+      canMonitor: false,
+      permissionsSummary: {
+        contents: "read",
+        pullRequests: "read",
+        connectionStatus: "disconnected",
+        accessRemovedFromInstallation: true
+      }
+    };
+
+    expect(getRepositoryMonitoringStatus(repository)).toEqual({
+      label: "GitHub App access removed",
+      tone: "warning",
+      detail: "This repository history is preserved, but monitoring is disabled because it is no longer selected in the GitHub App installation."
+    });
+
+    expect(getRepositoryCapabilityBadges(repository).map((badge) => badge.label)).toEqual([
+      "Scan disabled",
+      "Monitoring disabled",
+      "PR remediation disabled",
+      "GitHub App access removed",
+      "Private repo support disabled"
+    ]);
   });
 });

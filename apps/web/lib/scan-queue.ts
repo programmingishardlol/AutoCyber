@@ -4,6 +4,7 @@ import { GitHubAppAuthError } from "./github-app-auth";
 import { clonePublicGitHubRepository, GitHubIngestionError } from "./github-ingestion";
 import { cloneGitHubRepositoryWithInstallationToken } from "./github-private-ingestion";
 import type { PersistenceStore } from "./persistence/store";
+import { normalizeScannerResultForContext } from "./scan-result-context";
 
 type FindingSummary = ScanJob["summary"];
 
@@ -18,6 +19,10 @@ export interface EnqueueScanJobInput {
 
 export interface ProcessScanJobOptions {
   scanRepositoryPath?: (repositoryPath: string, repositoryId: string, scanJobId: string) => Promise<ScannerResult>;
+  fetchPublicGitHubRepository?: (input: {
+    repository: Repository;
+    scan(repositoryPath: string): Promise<ScannerResult>;
+  }) => Promise<ScannerResult>;
   fetchPrivateGitHubRepository?: (input: {
     repository: Repository;
     scan(repositoryPath: string): Promise<ScannerResult>;
@@ -28,7 +33,22 @@ export type ProcessScanJobResult =
   | { status: "completed"; scanJobId: string; findings: number }
   | { status: "failed"; scanJobId: string; error: string };
 
+export interface ProcessQueuedScanJobsOptions extends ProcessScanJobOptions {
+  limit?: number;
+}
+
+export interface ProcessQueuedScanJobsResult {
+  requestedLimit: number;
+  processed: number;
+  completed: number;
+  failed: number;
+  remainingQueued: number;
+  results: ProcessScanJobResult[];
+}
+
 const safeMonitoringScanError = "AutoCyber could not complete the monitoring scan.";
+const defaultQueueProcessLimit = 5;
+const maxQueueProcessLimit = 10;
 
 export async function enqueueScanJob(store: PersistenceStore, input: EnqueueScanJobInput): Promise<ScanJob> {
   return store.createScanJob({
@@ -71,7 +91,11 @@ export async function processScanJob(
   await store.writeAuditLog("monitoring_scan_started", "scan_job", scanJob.id);
 
   try {
-    const result = await runScannerForRepository(scanJob, repository, options);
+    const rawResult = await runScannerForRepository(scanJob, repository, options);
+    const result = normalizeScannerResultForContext(rawResult, {
+      repositoryId: repository.id,
+      scanJobId: scanJob.id
+    });
     await store.saveFindings(result.findings);
     await store.upsertRepoProfileMemory(result.repositoryId, result.projectProfile);
     await store.completeScanJob(result.scanJobId, summarizeFindings(result.findings));
@@ -95,6 +119,36 @@ export async function processScanJob(
       error: message
     };
   }
+}
+
+export async function processQueuedScanJobs(
+  store: PersistenceStore,
+  options: ProcessQueuedScanJobsOptions = {}
+): Promise<ProcessQueuedScanJobsResult> {
+  const requestedLimit = normalizeQueueProcessLimit(options.limit);
+  const scanJobs = await store.listScanJobs();
+  const queuedJobs = scanJobs.filter((scanJob) => scanJob.status === "queued");
+  const selectedJobs = queuedJobs.slice(0, requestedLimit);
+  const results: ProcessScanJobResult[] = [];
+
+  await store.writeAuditLog("scan_queue_worker_started", "scan_queue", "queued");
+
+  for (const scanJob of selectedJobs) {
+    results.push(await processScanJob(store, scanJob.id, options));
+  }
+
+  const latestScanJobs = await store.listScanJobs();
+  const remainingQueued = latestScanJobs.filter((scanJob) => scanJob.status === "queued").length;
+  await store.writeAuditLog("scan_queue_worker_completed", "scan_queue", "queued");
+
+  return {
+    requestedLimit,
+    processed: results.length,
+    completed: results.filter((result) => result.status === "completed").length,
+    failed: results.filter((result) => result.status === "failed").length,
+    remainingQueued,
+    results
+  };
 }
 
 async function createFailureNotifications(
@@ -211,6 +265,11 @@ function sanitizeNotificationText(value: string): string {
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]");
 }
 
+function normalizeQueueProcessLimit(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return defaultQueueProcessLimit;
+  return Math.max(1, Math.min(maxQueueProcessLimit, Math.floor(value)));
+}
+
 export async function retryScanJob(store: PersistenceStore, scanJobId: string): Promise<ScanJob> {
   const scanJob = await store.getScanJob(scanJobId);
   if (!scanJob) {
@@ -256,13 +315,20 @@ async function runScannerForRepository(
     });
   }
 
-  if (process.env.AUTOCYBER_TEST_GITHUB_CLONE_PATH) {
-    return scanRepositoryPath(process.env.AUTOCYBER_TEST_GITHUB_CLONE_PATH, repository.id, scanJob.id);
-  }
-
-  return clonePublicGitHubRepository({
-    repoUrl: repository.url,
+  const fetchPublicGitHubRepository = options.fetchPublicGitHubRepository ?? defaultFetchPublicGitHubRepository;
+  return fetchPublicGitHubRepository({
+    repository,
     scan: (repositoryPath) => scanRepositoryPath(repositoryPath, repository.id, scanJob.id)
+  });
+}
+
+async function defaultFetchPublicGitHubRepository(input: {
+  repository: Repository;
+  scan(repositoryPath: string): Promise<ScannerResult>;
+}): Promise<ScannerResult> {
+  return clonePublicGitHubRepository({
+    repoUrl: input.repository.url,
+    scan: input.scan
   });
 }
 

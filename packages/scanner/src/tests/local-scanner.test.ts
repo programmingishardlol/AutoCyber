@@ -138,6 +138,22 @@ describe("local repository scanner", () => {
     ]);
   });
 
+  it("does not report Supabase permissive RLS when the repo only contains README", async () => {
+    const scanner = createLocalScanner();
+    const repositoryPath = await mkdtemp(join(tmpdir(), "autocyber-readme-only-"));
+    await writeFile(join(repositoryPath, "README.md"), "# Hello World\n");
+
+    const result = await scanner.scan({
+      repositoryPath,
+      repositoryId: "repo_readme_only",
+      scanJobId: "scan_readme_only",
+    });
+
+    expect(result.filesScanned).toBe(1);
+    expect(result.findings.some((finding) => finding.ruleId === "supabase-permissive-rls-policy")).toBe(false);
+    expect(result.findings.some((finding) => finding.affectedFile.startsWith("supabase/migrations/"))).toBe(false);
+  });
+
   it("ignores generated folders even when they contain bait findings", async () => {
     const scanner = createLocalScanner();
     const repositoryPath = await mkdtemp(

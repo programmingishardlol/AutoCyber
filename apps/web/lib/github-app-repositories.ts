@@ -74,7 +74,7 @@ function toRepositoryRecord(repo: NonNullable<GitHubInstallationRepositoryRespon
 
   const permissions = normalizePermissions(repo.permissions ?? {});
   const canScan = permissions.contents === "read" || permissions.contents === "write";
-  const canOpenPr = permissions.contents === "write" && permissions.pullRequests === "write";
+  const pullRequestWriteGranted = permissions.contents === "write" && permissions.pullRequests === "write";
 
   return {
     owner,
@@ -84,8 +84,12 @@ function toRepositoryRecord(repo: NonNullable<GitHubInstallationRepositoryRespon
     isPrivate: repo.private === true,
     canScan,
     canMonitor: canScan,
-    canOpenPr,
-    permissionsSummary: permissions
+    canOpenPr: false,
+    permissionsSummary: {
+      ...permissions,
+      pullRequestWriteGranted,
+      githubAppPrCreationImplemented: false
+    }
   };
 }
 

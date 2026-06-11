@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import type {
   AuditLog,
   Finding,
   FixProposal,
+  GitHubInstallation,
   Notification,
   PullRequestRecord,
   Repository,
@@ -18,6 +19,7 @@ import {
   auditLogs,
   findings,
   fixProposals,
+  githubInstallations,
   notifications,
   pullRequests,
   repositories,
@@ -25,10 +27,16 @@ import {
   securityMemories,
   verificationResults
 } from "../db/schema";
+import { dedupeRepositories, sameRepositoryIdentity } from "../repository-identity";
 
 type FindingSummary = ScanJob["summary"];
 type RepositoryInput = Pick<Repository, "projectId" | "provider" | "owner" | "name" | "defaultBranch" | "url"> &
   Partial<Pick<Repository, "installationId" | "isPrivate" | "connectionType" | "canScan" | "canMonitor" | "canOpenPr" | "permissionsSummary">>;
+type GitHubInstallationInput = Pick<
+  GitHubInstallation,
+  "installationId" | "teamId" | "userId" | "accountLogin" | "accountType" | "repositorySelection" | "repositoryCount" | "permissionsSummary"
+> &
+  Partial<Pick<GitHubInstallation, "status">>;
 type ScanJobInput = Pick<ScanJob, "repositoryId" | "source" | "branch" | "commitSha"> &
   Partial<Pick<ScanJob, "status" | "webhookDeliveryId" | "pullRequestNumber">>;
 type NotificationInput = Pick<Notification, "repositoryId" | "type" | "severity" | "title" | "message"> &
@@ -40,6 +48,7 @@ const emptySummary: FindingSummary = { critical: 0, high: 0, medium: 0, low: 0, 
 
 export interface PersistenceSnapshot {
   repositories: Repository[];
+  githubInstallations: GitHubInstallation[];
   scanJobs: ScanJob[];
   findings: Finding[];
   fixProposals: FixProposal[];
@@ -52,6 +61,9 @@ export interface PersistenceSnapshot {
 
 export interface PersistenceStore {
   upsertRepository(input: RepositoryInput): Promise<Repository>;
+  upsertGitHubInstallation(input: GitHubInstallationInput): Promise<GitHubInstallation>;
+  getGitHubInstallation(installationId: string): Promise<GitHubInstallation | null>;
+  listGitHubInstallations(): Promise<GitHubInstallation[]>;
   findGitHubRepository(owner: string, name: string): Promise<Repository | null>;
   getRepository(repositoryId: string): Promise<Repository | null>;
   listRepositories(): Promise<Repository[]>;
@@ -71,6 +83,7 @@ export interface PersistenceStore {
   listNotifications(): Promise<Notification[]>;
   markNotificationRead(notificationId: string): Promise<Notification | null>;
   dismissNotification(notificationId: string): Promise<Notification | null>;
+  listSecurityMemories(): Promise<SecurityMemory[]>;
   upsertRepoProfileMemory(repositoryId: string, profile: ProjectProfile): Promise<void>;
   recordFixDecisionMemory(repositoryId: string, proposal: FixProposal, decision: "accepted_fix" | "rejected_fix"): Promise<void>;
   writeAuditLog(action: string, targetType: string, targetId: string): Promise<void>;
@@ -80,6 +93,7 @@ export interface PersistenceStore {
 export function createDevPersistenceStore(): PersistenceStore {
   const state: PersistenceSnapshot = {
     repositories: [],
+    githubInstallations: [],
     scanJobs: [],
     findings: [],
     fixProposals: [],
@@ -92,22 +106,26 @@ export function createDevPersistenceStore(): PersistenceStore {
 
   return {
     async upsertRepository(input) {
-      const existing = state.repositories.find(
-        (repository) => repository.provider === input.provider && repository.owner === input.owner && repository.name === input.name
-      );
+      const existing = state.repositories.find((repository) => sameRepositoryIdentity(repository, input));
       const now = isoNow();
 
       if (existing) {
+        const preserveInstalledPrivateState =
+          Boolean(existing.installationId) && !input.installationId && input.connectionType === "public_github";
+        existing.projectId = input.projectId;
+        existing.owner = input.owner;
+        existing.name = input.name;
         existing.defaultBranch = input.defaultBranch;
         existing.url = input.url;
         existing.installationId = input.installationId ?? existing.installationId;
-        existing.isPrivate = input.isPrivate ?? existing.isPrivate;
+        existing.isPrivate = preserveInstalledPrivateState ? existing.isPrivate : input.isPrivate ?? existing.isPrivate;
         existing.connectionType = input.connectionType ?? existing.connectionType;
         existing.canScan = input.canScan ?? existing.canScan;
         existing.canMonitor = input.canMonitor ?? existing.canMonitor;
         existing.canOpenPr = input.canOpenPr ?? existing.canOpenPr;
         existing.permissionsSummary = input.permissionsSummary ?? existing.permissionsSummary;
         existing.updatedAt = now;
+        normalizeInstalledRepositoryCapabilities(existing);
         return existing;
       }
 
@@ -127,12 +145,61 @@ export function createDevPersistenceStore(): PersistenceStore {
         ...input
       };
       state.repositories.push(repository);
+      normalizeInstalledRepositoryCapabilities(repository);
       await this.writeAuditLog("repo_created", "repository", repository.id);
       return repository;
     },
 
+    async upsertGitHubInstallation(input) {
+      const now = isoNow();
+      const existing = state.githubInstallations.find((installation) => installation.installationId === input.installationId);
+      if (existing) {
+        existing.teamId = input.teamId;
+        existing.userId = input.userId;
+        existing.accountLogin = input.accountLogin;
+        existing.accountType = input.accountType;
+        existing.status = input.status ?? existing.status;
+        existing.repositorySelection = input.repositorySelection;
+        existing.repositoryCount = input.repositoryCount;
+        existing.permissionsSummary = input.permissionsSummary;
+        existing.updatedAt = now;
+        await this.writeAuditLog("github_installation_updated", "github_installation", existing.installationId);
+        return existing;
+      }
+
+      const installation: GitHubInstallation = {
+        id: createId("ghinst"),
+        installationId: input.installationId,
+        teamId: input.teamId,
+        userId: input.userId,
+        accountLogin: input.accountLogin,
+        accountType: input.accountType,
+        status: input.status ?? "connected",
+        repositorySelection: input.repositorySelection,
+        repositoryCount: input.repositoryCount,
+        permissionsSummary: input.permissionsSummary,
+        createdAt: now,
+        updatedAt: now
+      };
+      state.githubInstallations.push(installation);
+      await this.writeAuditLog("github_installation_created", "github_installation", installation.installationId);
+      return installation;
+    },
+
+    async getGitHubInstallation(installationId) {
+      return state.githubInstallations.find((installation) => installation.installationId === installationId) ?? null;
+    },
+
+    async listGitHubInstallations() {
+      return [...state.githubInstallations];
+    },
+
     async findGitHubRepository(owner, name) {
-      return state.repositories.find((repository) => repository.provider === "github" && repository.owner === owner && repository.name === name) ?? null;
+      return (
+        state.repositories.find(
+          (repository) => repository.provider === "github" && repository.owner.toLowerCase() === owner.toLowerCase() && repository.name.toLowerCase() === name.toLowerCase()
+        ) ?? null
+      );
     },
 
     async getRepository(repositoryId) {
@@ -140,7 +207,7 @@ export function createDevPersistenceStore(): PersistenceStore {
     },
 
     async listRepositories() {
-      return [...state.repositories];
+      return dedupeRepositories(state.repositories);
     },
 
     async getScanJob(scanJobId) {
@@ -309,6 +376,10 @@ export function createDevPersistenceStore(): PersistenceStore {
       return notification;
     },
 
+    async listSecurityMemories() {
+      return [...state.securityMemories];
+    },
+
     async upsertRepoProfileMemory(repositoryId, profile) {
       const memory: SecurityMemory = {
         id: `mem_repo_profile_${repositoryId}`,
@@ -393,15 +464,13 @@ function createDatabasePersistenceStore(connectionString: string): PersistenceSt
     ...devStore,
     async upsertRepository(input) {
       const before = getSideEffectCounts(devStore.snapshot());
-      const localRepository = devStore
-        .snapshot()
-        .repositories.find((repository) => repository.provider === input.provider && repository.owner === input.owner && repository.name === input.name);
+      const localRepository = devStore.snapshot().repositories.find((repository) => sameRepositoryIdentity(repository, input));
 
       if (!localRepository) {
         const existingRows = await db
           .select()
           .from(repositories)
-          .where(and(eq(repositories.provider, input.provider), eq(repositories.owner, input.owner), eq(repositories.name, input.name)))
+          .where(repositoryIdentityWhere(input))
           .limit(1);
 
         if (existingRows[0]) {
@@ -425,6 +494,32 @@ function createDatabasePersistenceStore(connectionString: string): PersistenceSt
       await persistNewSideEffects(before);
       return repository;
     },
+    async upsertGitHubInstallation(input) {
+      const before = getSideEffectCounts(devStore.snapshot());
+      const local = await devStore.upsertGitHubInstallation(input);
+      const row = toGitHubInstallationRow(local);
+      await db
+        .insert(githubInstallations)
+        .values(row)
+        .onConflictDoUpdate({
+          target: githubInstallations.installationId,
+          set: row
+        });
+      await persistNewSideEffects(before);
+      return local;
+    },
+    async getGitHubInstallation(installationId) {
+      const local = await devStore.getGitHubInstallation(installationId);
+      if (local) return local;
+
+      const rows = await db.select().from(githubInstallations).where(eq(githubInstallations.installationId, installationId)).limit(1);
+      return rows[0] ? fromGitHubInstallationRow(rows[0]) : null;
+    },
+    async listGitHubInstallations() {
+      const local = devStore.snapshot().githubInstallations;
+      const rows = await db.select().from(githubInstallations);
+      return mergeById(local, rows.map(fromGitHubInstallationRow));
+    },
     async findGitHubRepository(owner, name) {
       const local = await devStore.findGitHubRepository(owner, name);
       if (local) return local;
@@ -432,7 +527,7 @@ function createDatabasePersistenceStore(connectionString: string): PersistenceSt
       const rows = await db
         .select()
         .from(repositories)
-        .where(and(eq(repositories.provider, "github"), eq(repositories.owner, owner), eq(repositories.name, name)))
+        .where(and(eq(repositories.provider, "github"), sql`lower(${repositories.owner}) = ${owner.toLowerCase()}`, sql`lower(${repositories.name}) = ${name.toLowerCase()}`))
         .limit(1);
 
       return rows[0] ? fromRepositoryRow(rows[0]) : null;
@@ -447,7 +542,7 @@ function createDatabasePersistenceStore(connectionString: string): PersistenceSt
     async listRepositories() {
       const local = devStore.snapshot().repositories;
       const rows = await db.select().from(repositories);
-      return mergeById(local, rows.map(fromRepositoryRow));
+      return dedupeRepositories(mergeById(local, rows.map(fromRepositoryRow)));
     },
     async getScanJob(scanJobId) {
       const local = await devStore.getScanJob(scanJobId);
@@ -624,6 +719,11 @@ function createDatabasePersistenceStore(connectionString: string): PersistenceSt
       await persistNewSideEffects(before);
       return notification;
     },
+    async listSecurityMemories() {
+      const local = devStore.snapshot().securityMemories;
+      const rows = await db.select().from(securityMemories);
+      return mergeById(local, rows.map(fromMemoryRow));
+    },
     async upsertRepoProfileMemory(repositoryId, profile) {
       const before = getSideEffectCounts(devStore.snapshot());
       await devStore.upsertRepoProfileMemory(repositoryId, profile);
@@ -646,6 +746,18 @@ function getSideEffectCounts(snapshot: PersistenceSnapshot): { securityMemoryCou
   };
 }
 
+function repositoryIdentityWhere(input: RepositoryInput) {
+  if (input.provider === "github") {
+    return and(
+      eq(repositories.provider, "github"),
+      sql`lower(${repositories.owner}) = ${input.owner.toLowerCase()}`,
+      sql`lower(${repositories.name}) = ${input.name.toLowerCase()}`
+    );
+  }
+
+  return and(eq(repositories.provider, input.provider), eq(repositories.url, input.url));
+}
+
 function fromRepositoryRow(repository: typeof repositories.$inferSelect): Repository {
   return {
     id: repository.id,
@@ -665,6 +777,23 @@ function fromRepositoryRow(repository: typeof repositories.$inferSelect): Reposi
     lastScannedAt: repository.lastScannedAt ? repository.lastScannedAt.toISOString() : null,
     createdAt: repository.createdAt.toISOString(),
     updatedAt: repository.updatedAt.toISOString()
+  };
+}
+
+function fromGitHubInstallationRow(installation: typeof githubInstallations.$inferSelect): GitHubInstallation {
+  return {
+    id: installation.id,
+    installationId: installation.installationId,
+    teamId: installation.teamId,
+    userId: installation.userId,
+    accountLogin: installation.accountLogin,
+    accountType: installation.accountType,
+    status: normalizeGitHubInstallationStatus(installation.status),
+    repositorySelection: installation.repositorySelection,
+    repositoryCount: installation.repositoryCount,
+    permissionsSummary: installation.permissionsSummary ?? {},
+    createdAt: installation.createdAt.toISOString(),
+    updatedAt: installation.updatedAt.toISOString()
   };
 }
 
@@ -731,6 +860,21 @@ function fromNotificationRow(notification: typeof notifications.$inferSelect): N
   };
 }
 
+function fromMemoryRow(memory: typeof securityMemories.$inferSelect): SecurityMemory {
+  return {
+    id: memory.id,
+    teamId: memory.teamId,
+    repositoryId: memory.repositoryId,
+    kind: normalizeSecurityMemoryKind(memory.kind),
+    title: memory.title,
+    content: memory.content,
+    source: normalizeSecurityMemorySource(memory.source),
+    confidence: normalizeSecurityMemoryConfidence(memory.confidence),
+    createdAt: memory.createdAt.toISOString(),
+    updatedAt: memory.updatedAt.toISOString()
+  };
+}
+
 function toRepositoryRow(repository: Repository) {
   return {
     ...repository,
@@ -741,6 +885,14 @@ function toRepositoryRow(repository: Repository) {
     lastScannedAt: repository.lastScannedAt ? new Date(repository.lastScannedAt) : null,
     createdAt: new Date(repository.createdAt),
     updatedAt: new Date(repository.updatedAt)
+  };
+}
+
+function toGitHubInstallationRow(installation: GitHubInstallation) {
+  return {
+    ...installation,
+    createdAt: new Date(installation.createdAt),
+    updatedAt: new Date(installation.updatedAt)
   };
 }
 
@@ -863,13 +1015,15 @@ function getRepositoryCapabilityDefaults(input: RepositoryInput): Pick<Repositor
 
 function applyRepositoryInput(repository: Repository, input: RepositoryInput): Repository {
   const defaults = getRepositoryCapabilityDefaults(input);
-  return {
+  const preserveInstalledPrivateState =
+    Boolean(repository.installationId) && !input.installationId && input.connectionType === "public_github";
+  const updatedRepository: Repository = {
     ...repository,
     projectId: input.projectId,
     defaultBranch: input.defaultBranch,
     url: input.url,
     installationId: input.installationId ?? repository.installationId,
-    isPrivate: input.isPrivate ?? repository.isPrivate,
+    isPrivate: preserveInstalledPrivateState ? repository.isPrivate : input.isPrivate ?? repository.isPrivate,
     connectionType: input.connectionType ?? repository.connectionType ?? defaults.connectionType,
     canScan: input.canScan ?? repository.canScan ?? defaults.canScan,
     canMonitor: input.canMonitor ?? repository.canMonitor ?? defaults.canMonitor,
@@ -877,11 +1031,59 @@ function applyRepositoryInput(repository: Repository, input: RepositoryInput): R
     permissionsSummary: input.permissionsSummary ?? repository.permissionsSummary ?? defaults.permissionsSummary,
     updatedAt: isoNow()
   };
+  normalizeInstalledRepositoryCapabilities(updatedRepository);
+  return updatedRepository;
+}
+
+function normalizeInstalledRepositoryCapabilities(repository: Repository): void {
+  if (!repository.installationId) return;
+  if (repository.permissionsSummary.connectionStatus === "disconnected" || repository.permissionsSummary.accessRemovedFromInstallation === true) return;
+
+  repository.connectionType = "github_app";
+  repository.canScan = true;
+  repository.canMonitor = true;
+  repository.canOpenPr = false;
+  repository.permissionsSummary = {
+    ...repository.permissionsSummary,
+    connectionStatus: "connected",
+    githubAppPrCreationImplemented: false
+  };
 }
 
 function normalizeConnectionType(value: string): Repository["connectionType"] {
   if (value === "github_app" || value === "public_github" || value === "token_dev") return value;
   return "local";
+}
+
+function normalizeGitHubInstallationStatus(value: string): GitHubInstallation["status"] {
+  if (value === "connected" || value === "disconnected" || value === "revoked" || value === "error") return value;
+  return "error";
+}
+
+function normalizeSecurityMemoryKind(value: string): SecurityMemory["kind"] {
+  if (
+    value === "architecture" ||
+    value === "repo_profile" ||
+    value === "accepted_fix" ||
+    value === "rejected_fix" ||
+    value === "false_positive" ||
+    value === "preference"
+  ) {
+    return value;
+  }
+  return "preference";
+}
+
+function normalizeSecurityMemorySource(value: string): SecurityMemory["source"] {
+  if (value === "human" || value === "autocyber" || value === "scanner_observed" || value === "user_approved" || value === "user_rejected") {
+    return value;
+  }
+  return "autocyber";
+}
+
+function normalizeSecurityMemoryConfidence(value: string): SecurityMemory["confidence"] {
+  if (value === "high" || value === "medium" || value === "low") return value;
+  return "medium";
 }
 
 function createId(prefix: string): string {

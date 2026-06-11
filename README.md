@@ -230,6 +230,7 @@ Stage 6 monitoring is in progress. Current pieces include:
 - GitHub App callback route: `/api/github-app/callback`
 - GitHub webhook route: `/api/webhooks/github`
 - Retry route: `/api/scans/retry`
+- Queue worker route: `/api/scans/process-queue`
 - Notifications route: `/api/notifications`
 - Monitoring history page: `/scans`
 - Notifications page: `/notifications`
@@ -239,8 +240,9 @@ For webhook testing:
 1. Set `GITHUB_WEBHOOK_SECRET` in `.env.local`.
 2. Connect or seed a GitHub repository record.
 3. Send a signed `push` or `pull_request` webhook payload.
-4. Use `AUTOCYBER_WEBHOOK_EXECUTION_MODE=queued` for queued jobs or `inline` for local synchronous testing.
-5. Review monitoring history and notifications in the UI.
+4. Leave `AUTOCYBER_WEBHOOK_EXECUTION_MODE` unset or set it to `auto` for push webhooks to scan immediately in the current prototype.
+5. Use `AUTOCYBER_WEBHOOK_EXECUTION_MODE=queued` and call `POST /api/scans/process-queue` with `X-AutoCyber-Worker-Secret` only when testing the explicit queue-worker path.
+6. Review monitoring history and notifications in the UI.
 
 ## API Routes
 
@@ -250,6 +252,7 @@ Current app routes include:
 - `GET /api/mock/summary`: demo summary data
 - `POST /api/scans`: local or public GitHub scan
 - `POST /api/scans/retry`: retry a failed scan job
+- `POST /api/scans/process-queue`: process queued monitoring scan jobs behind a worker secret
 - `POST /api/fix-proposals`: generate a fix proposal from a normalized finding
 - `POST /api/remediations`: apply and verify an approved proposal in a local remediation flow
 - `POST /api/github-prs`: create a PR from an approved and verified remediation execution
@@ -295,6 +298,7 @@ This repository intentionally ignores private local Markdown and environment fil
 
 - `README.md` is public.
 - Other `*.md` files are treated as private local notes by default.
+- `.superpowers/` is local brainstorming/session output and is not required to run AutoCyber.
 - `.env.example` is public because it contains empty placeholders.
 - `.env`, `.env.local`, and `.env.*` files are private and ignored.
 

@@ -28,19 +28,35 @@ export function getRepositoryMonitoringStatus(repository: Repository): Repositor
     };
   }
 
-  if (repository.connectionType === "public_github" && !repository.canMonitor) {
+  if (hasRemovedGitHubAppAccess(repository)) {
     return {
-      label: "Public scan enabled",
+      label: "GitHub App access removed",
       tone: "warning",
-      detail: "Public GitHub URL scans work without a token. Monitoring and PR remediation need a GitHub connection."
+      detail: "This repository history is preserved, but monitoring is disabled because it is no longer selected in the GitHub App installation."
     };
   }
 
-  if (repository.isPrivate) {
+  if (repository.installationId) {
+    if (repository.isPrivate) {
+      return {
+        label: "Private monitoring enabled",
+        tone: "success",
+        detail: "GitHub App installation ID is present for private repository fetches. GitHub App PR remediation is not implemented yet."
+      };
+    }
+
     return {
-      label: "Private monitoring enabled",
+      label: "Public monitoring enabled",
       tone: "success",
-      detail: "GitHub App installation ID is present for private repository fetches."
+      detail: "GitHub App monitoring is connected for this public repository. GitHub App PR remediation is not implemented yet."
+    };
+  }
+
+  if (repository.connectionType === "public_github" && !repository.canMonitor) {
+    return {
+      label: "One-time public scan",
+      tone: "warning",
+      detail: "Public GitHub URL scans work without a token, but continuous monitoring and PR remediation require a GitHub App connection."
     };
   }
 
@@ -48,32 +64,48 @@ export function getRepositoryMonitoringStatus(repository: Repository): Repositor
     label: repository.canMonitor ? "Public monitoring enabled" : "Public scan enabled",
     tone: "success",
     detail: repository.canMonitor
-      ? "Public GitHub monitoring uses the existing public clone scan path."
+      ? "GitHub App monitoring is connected for this public repository. GitHub App PR remediation is not implemented yet."
       : "Public GitHub URL scans work without a token. Monitoring requires a GitHub connection."
   };
 }
 
 export function getRepositoryCapabilityBadges(repository: Repository): RepositoryCapabilityBadge[] {
+  const appInstalled = Boolean(repository.installationId);
+  const accessRemoved = hasRemovedGitHubAppAccess(repository);
+  const canScan = repository.canScan || (appInstalled && !accessRemoved);
+  const canMonitor = repository.canMonitor || (appInstalled && !accessRemoved);
+  const canOpenPr = repository.canOpenPr && !appInstalled ? repository.canOpenPr : false;
+  const privateRepoSupport = repository.isPrivate && appInstalled;
+
   return [
     {
-      label: repository.canScan ? "Scan enabled" : "Scan disabled",
-      tone: repository.canScan ? "success" : "warning"
+      label: canScan ? "Scan enabled" : "Scan disabled",
+      tone: canScan ? "success" : "warning"
     },
     {
-      label: repository.canMonitor ? "Monitoring enabled" : "Monitoring disabled",
-      tone: repository.canMonitor ? "success" : "warning"
+      label: canMonitor ? "Monitoring enabled" : "Monitoring disabled",
+      tone: canMonitor ? "success" : "warning"
     },
     {
-      label: repository.canOpenPr ? "PR remediation enabled" : "PR remediation disabled",
-      tone: repository.canOpenPr ? "success" : "warning"
+      label: canOpenPr ? "PR remediation enabled" : "PR remediation disabled",
+      tone: canOpenPr ? "success" : "warning"
     },
+    accessRemoved
+      ? {
+          label: "GitHub App access removed",
+          tone: "warning"
+        }
+      : {
+          label: appInstalled ? "GitHub App installed" : "GitHub App missing",
+          tone: appInstalled ? "success" : "muted"
+        },
     {
-      label: repository.installationId ? "GitHub App installed" : "GitHub App missing",
-      tone: repository.installationId ? "success" : "muted"
-    },
-    {
-      label: repository.isPrivate && repository.installationId ? "Private repo support enabled" : "Private repo support disabled",
-      tone: repository.isPrivate && repository.installationId ? "success" : "muted"
+      label: privateRepoSupport ? "Private repo support enabled" : "Private repo support disabled",
+      tone: privateRepoSupport ? "success" : "muted"
     }
   ];
+}
+
+export function hasRemovedGitHubAppAccess(repository: Repository): boolean {
+  return repository.permissionsSummary.connectionStatus === "disconnected" || repository.permissionsSummary.accessRemovedFromInstallation === true;
 }

@@ -30,7 +30,7 @@ export async function getMonitoringHistory(store: PersistenceStore): Promise<Mon
   const repositoriesById = new Map(repositories.map((repository) => [repository.id, repository]));
 
   return [...scanJobs]
-    .sort((a, b) => compareNullableDates(b.startedAt ?? b.completedAt, a.startedAt ?? a.completedAt))
+    .sort((a, b) => compareScanHistoryOrder(a, b))
     .map((scanJob) => {
       const repository = repositoriesById.get(scanJob.repositoryId);
       return {
@@ -69,6 +69,18 @@ export function summarizeMonitoringHistory(items: MonitoringHistoryItem[]): Moni
       hasFailures: false
     }
   );
+}
+
+function compareScanHistoryOrder(left: ScanJob, right: ScanJob): number {
+  const priorityDifference = scanStatusPriority(left.status) - scanStatusPriority(right.status);
+  if (priorityDifference !== 0) return priorityDifference;
+  return compareNullableDates(right.startedAt ?? right.completedAt, left.startedAt ?? left.completedAt);
+}
+
+function scanStatusPriority(status: ScanStatus): number {
+  if (status === "running") return 0;
+  if (status === "queued") return 1;
+  return 2;
 }
 
 function compareNullableDates(left: string | null, right: string | null): number {

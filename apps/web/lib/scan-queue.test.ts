@@ -2,8 +2,9 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ScannerResult } from "@autocyber/scanner";
 import { createDevPersistenceStore } from "./persistence/store";
-import { enqueueScanJob, processScanJob, retryScanJob } from "./scan-queue";
+import { enqueueScanJob, processQueuedScanJobs, processScanJob, retryScanJob } from "./scan-queue";
 
 describe("Stage 6C scan queue", () => {
   beforeEach(() => {
@@ -41,7 +42,6 @@ describe("Stage 6C scan queue", () => {
 
   it("processes queued scans through running to completed and stores findings", async () => {
     const repositoryPath = await createVulnerableRepo();
-    vi.stubEnv("AUTOCYBER_TEST_GITHUB_CLONE_PATH", repositoryPath);
     const store = createDevPersistenceStore();
     const repository = await seedRepository(store);
     const scanJob = await enqueueScanJob(store, {
@@ -53,7 +53,9 @@ describe("Stage 6C scan queue", () => {
       pullRequestNumber: 12,
     });
 
-    const result = await processScanJob(store, scanJob.id);
+    const result = await processScanJob(store, scanJob.id, {
+      fetchPublicGitHubRepository: async (input) => input.scan(repositoryPath),
+    });
     const snapshot = store.snapshot();
 
     expect(result.status).toBe("completed");
@@ -83,6 +85,42 @@ describe("Stage 6C scan queue", () => {
         "monitoring_scan_completed",
       ]),
     );
+  });
+
+  it("does not use the test clone path override for public GitHub monitoring scans", async () => {
+    const overrideRepo = await createVulnerableRepo();
+    const actualRepo = await createVulnerableRepo();
+    vi.stubEnv("AUTOCYBER_TEST_GITHUB_CLONE_PATH", overrideRepo);
+    const store = createDevPersistenceStore();
+    const repository = await seedRepository(store);
+    const scanJob = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "abc-public",
+      webhookDeliveryId: "delivery-public",
+      pullRequestNumber: null,
+    });
+    const scannedPaths: string[] = [];
+
+    const result = await processScanJob(store, scanJob.id, {
+      fetchPublicGitHubRepository: async (input) => input.scan(actualRepo),
+      scanRepositoryPath: async (repositoryPath, repositoryId, scanJobId) => {
+        scannedPaths.push(repositoryPath);
+        return createScannerResult({
+          repositoryPath,
+          repositoryId,
+          scanJobId,
+          findingId: "finding_public",
+          findingRepositoryId: repositoryId,
+          findingScanJobId: scanJobId,
+        });
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(scannedPaths).toEqual([actualRepo]);
+    expect(scannedPaths).not.toContain(overrideRepo);
   });
 
   it("marks scan job failed without leaking internal errors", async () => {
@@ -245,12 +283,232 @@ describe("Stage 6C scan queue", () => {
     expect(JSON.stringify(snapshot)).not.toContain("ghs_");
   });
 
+  it("keeps findings separated for two queued scans under the same GitHub installation", async () => {
+    const store = createDevPersistenceStore();
+    const repoA = await seedPrivateRepository(store, "repo-a");
+    const repoB = await seedPrivateRepository(store, "repo-b");
+    const scanA = await enqueueScanJob(store, {
+      repositoryId: repoA.id,
+      source: "push",
+      branch: "main",
+      commitSha: "sha-a",
+      webhookDeliveryId: "delivery-a",
+      pullRequestNumber: null,
+    });
+    const scanB = await enqueueScanJob(store, {
+      repositoryId: repoB.id,
+      source: "push",
+      branch: "main",
+      commitSha: "sha-b",
+      webhookDeliveryId: "delivery-b",
+      pullRequestNumber: null,
+    });
+
+    await processScanJob(store, scanA.id, {
+      fetchPrivateGitHubRepository: async (input) =>
+        input.scan(`/tmp/${input.repository.name}`),
+      scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) => ({
+        scanner: "local",
+        repositoryPath: `/tmp/${repositoryId}`,
+        repositoryId,
+        scanJobId,
+        projectProfile: {
+          frameworks: ["nextjs"],
+          languages: ["typescript"],
+          integrations: [],
+          deploymentProviders: [],
+          packageManagers: ["pnpm"],
+        },
+        findings: [
+          createFinding({
+            id: `finding_${repositoryId}`,
+            repositoryId,
+            scanJobId,
+            severity: "high",
+            title: `Finding for ${repositoryId}`,
+          }),
+        ],
+        filesScanned: 1,
+        rulesRun: ["missing-api-auth"],
+        errors: [],
+      }),
+    });
+    await processScanJob(store, scanB.id, {
+      fetchPrivateGitHubRepository: async (input) =>
+        input.scan(`/tmp/${input.repository.name}`),
+      scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) => ({
+        scanner: "local",
+        repositoryPath: `/tmp/${repositoryId}`,
+        repositoryId,
+        scanJobId,
+        projectProfile: {
+          frameworks: ["nextjs"],
+          languages: ["typescript"],
+          integrations: [],
+          deploymentProviders: [],
+          packageManagers: ["pnpm"],
+        },
+        findings: [
+          createFinding({
+            id: `finding_${repositoryId}`,
+            repositoryId,
+            scanJobId,
+            severity: "critical",
+            title: `Finding for ${repositoryId}`,
+          }),
+        ],
+        filesScanned: 1,
+        rulesRun: ["missing-api-auth"],
+        errors: [],
+      }),
+    });
+
+    const snapshot = store.snapshot();
+    expect(snapshot.scanJobs.find((scan) => scan.id === scanA.id)).toMatchObject({
+      repositoryId: repoA.id,
+      status: "completed",
+    });
+    expect(snapshot.scanJobs.find((scan) => scan.id === scanB.id)).toMatchObject({
+      repositoryId: repoB.id,
+      status: "completed",
+    });
+    expect(snapshot.findings.filter((finding) => finding.repositoryId === repoA.id)).toHaveLength(1);
+    expect(snapshot.findings.filter((finding) => finding.repositoryId === repoB.id)).toHaveLength(1);
+    expect(snapshot.findings.find((finding) => finding.repositoryId === repoA.id)?.scanJobId).toBe(scanA.id);
+    expect(snapshot.findings.find((finding) => finding.repositoryId === repoB.id)?.scanJobId).toBe(scanB.id);
+  });
+
+  it("normalizes helper output to the active repository and scan context before saving findings and notifications", async () => {
+    const store = createDevPersistenceStore();
+    const repository = await seedPrivateRepository(store, "context-private-app");
+    const scanJob = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "pull_request",
+      branch: "feature/context",
+      commitSha: "context123",
+      webhookDeliveryId: "delivery-context",
+      pullRequestNumber: 101,
+    });
+
+    const result = await processScanJob(store, scanJob.id, {
+      fetchPrivateGitHubRepository: async () =>
+        createScannerResult({
+          repositoryPath: "/tmp/helper-context",
+          repositoryId: "repo_helper",
+          scanJobId: "scan_helper",
+          findingId: "finding_helper_plain",
+          findingRepositoryId: "repo_helper",
+          findingScanJobId: "scan_helper",
+        }),
+    });
+    const snapshot = store.snapshot();
+    const finding = snapshot.findings.find((candidate) => candidate.id === "finding_helper_plain");
+    const findingNotification = snapshot.notifications.find((notification) => notification.findingId === "finding_helper_plain");
+
+    expect(result.status).toBe("completed");
+    expect(finding).toMatchObject({
+      repositoryId: repository.id,
+      scanJobId: scanJob.id,
+    });
+    expect(findingNotification).toMatchObject({
+      repositoryId: repository.id,
+      scanJobId: scanJob.id,
+    });
+  });
+
+  it("fails safely before persistence when a finding id encodes a different scan context", async () => {
+    const store = createDevPersistenceStore();
+    const repository = await seedPrivateRepository(store, "mismatched-context-app");
+    const scanJob = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "mismatch123",
+      webhookDeliveryId: "delivery-mismatch",
+      pullRequestNumber: null,
+    });
+
+    const result = await processScanJob(store, scanJob.id, {
+      fetchPrivateGitHubRepository: async () =>
+        createScannerResult({
+          repositoryPath: "/tmp/mismatched-context",
+          repositoryId: repository.id,
+          scanJobId: scanJob.id,
+          findingId: "scan_other:local:supabase-permissive-rls-policy:abc123",
+          findingRepositoryId: repository.id,
+          findingScanJobId: scanJob.id,
+        }),
+    });
+    const snapshot = store.snapshot();
+
+    expect(result.status).toBe("failed");
+    expect(snapshot.findings).toHaveLength(0);
+    expect(snapshot.notifications).toEqual([
+      expect.objectContaining({
+        type: "scan_failed",
+        findingId: null,
+        repositoryId: repository.id,
+        scanJobId: scanJob.id,
+      }),
+    ]);
+  });
+
+  it("does not create notifications from stale findings saved by previous scans", async () => {
+    const store = createDevPersistenceStore();
+    const staleRepo = await seedPrivateRepository(store, "stale-repo");
+    const freshRepo = await seedPrivateRepository(store, "fresh-repo");
+    const staleScan = await enqueueScanJob(store, {
+      repositoryId: staleRepo.id,
+      source: "push",
+      branch: "main",
+      commitSha: "stale123",
+      webhookDeliveryId: "delivery-stale",
+      pullRequestNumber: null,
+    });
+    await store.saveFindings([
+      createFinding({
+        id: "finding_stale_high",
+        repositoryId: staleRepo.id,
+        scanJobId: staleScan.id,
+        severity: "high",
+        title: "Stale high finding",
+      }),
+    ]);
+    const freshScan = await enqueueScanJob(store, {
+      repositoryId: freshRepo.id,
+      source: "push",
+      branch: "main",
+      commitSha: "fresh123",
+      webhookDeliveryId: "delivery-fresh",
+      pullRequestNumber: null,
+    });
+
+    await processScanJob(store, freshScan.id, {
+      fetchPrivateGitHubRepository: async () =>
+        createScannerResult({
+          repositoryPath: "/tmp/fresh-context",
+          repositoryId: freshRepo.id,
+          scanJobId: freshScan.id,
+          findingId: "finding_fresh_low",
+          findingRepositoryId: freshRepo.id,
+          findingScanJobId: freshScan.id,
+          severity: "low",
+        }),
+    });
+    const notificationFindingIds = store.snapshot().notifications.map((notification) => notification.findingId);
+
+    expect(notificationFindingIds).not.toContain("finding_stale_high");
+    expect(store.snapshot().notifications).toEqual([
+      expect.objectContaining({
+        type: "webhook_scan_completed",
+        repositoryId: freshRepo.id,
+        scanJobId: freshScan.id,
+      }),
+    ]);
+  });
+
   it("creates notifications for high and critical findings plus pull request scan completion", async () => {
     const store = createDevPersistenceStore();
-    vi.stubEnv(
-      "AUTOCYBER_TEST_GITHUB_CLONE_PATH",
-      await createVulnerableRepo(),
-    );
     const repository = await seedRepository(store);
     const scanJob = await enqueueScanJob(store, {
       repositoryId: repository.id,
@@ -262,6 +520,7 @@ describe("Stage 6C scan queue", () => {
     });
 
     await processScanJob(store, scanJob.id, {
+      fetchPublicGitHubRepository: async (input) => input.scan("/tmp/autocyber-test"),
       scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) => ({
         scanner: "local",
         repositoryPath: "/tmp/autocyber-test",
@@ -324,10 +583,6 @@ describe("Stage 6C scan queue", () => {
 
   it("does not create noisy notifications for low or info findings", async () => {
     const store = createDevPersistenceStore();
-    vi.stubEnv(
-      "AUTOCYBER_TEST_GITHUB_CLONE_PATH",
-      await createVulnerableRepo(),
-    );
     const repository = await seedRepository(store);
     const scanJob = await enqueueScanJob(store, {
       repositoryId: repository.id,
@@ -339,6 +594,7 @@ describe("Stage 6C scan queue", () => {
     });
 
     await processScanJob(store, scanJob.id, {
+      fetchPublicGitHubRepository: async (input) => input.scan("/tmp/autocyber-test"),
       scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) => ({
         scanner: "local",
         repositoryPath: "/tmp/autocyber-test",
@@ -376,6 +632,72 @@ describe("Stage 6C scan queue", () => {
     expect(
       store.snapshot().notifications.map((notification) => notification.type),
     ).toEqual(["webhook_scan_completed"]);
+  });
+
+  it("processes only queued scans in bounded batches and skips completed scans", async () => {
+    const repositoryPath = await createVulnerableRepo();
+    const store = createDevPersistenceStore();
+    const repository = await store.upsertRepository({
+      projectId: "proj_dev",
+      provider: "local",
+      owner: "local",
+      name: "worker-repo",
+      defaultBranch: "local",
+      url: repositoryPath,
+    });
+    const completedScan = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "completed123",
+      webhookDeliveryId: "delivery-completed",
+      pullRequestNumber: null,
+    });
+    await store.completeScanJob(completedScan.id, {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      info: 0,
+    });
+    const firstQueuedScan = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "queued123",
+      webhookDeliveryId: "delivery-queued-1",
+      pullRequestNumber: null,
+    });
+    const secondQueuedScan = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "queued456",
+      webhookDeliveryId: "delivery-queued-2",
+      pullRequestNumber: null,
+    });
+
+    const result = await processQueuedScanJobs(store, { limit: 1 });
+    const snapshot = store.snapshot();
+
+    expect(result).toMatchObject({
+      requestedLimit: 1,
+      processed: 1,
+      completed: 1,
+      failed: 0,
+      remainingQueued: 1,
+    });
+    expect(snapshot.scanJobs.find((scan) => scan.id === completedScan.id)).toMatchObject({
+      status: "completed",
+      commitSha: "completed123",
+    });
+    expect(snapshot.scanJobs.find((scan) => scan.id === firstQueuedScan.id)).toMatchObject({
+      status: "completed",
+    });
+    expect(snapshot.scanJobs.find((scan) => scan.id === secondQueuedScan.id)).toMatchObject({
+      status: "queued",
+    });
+    expect(snapshot.notifications.map((notification) => notification.type)).toContain("webhook_scan_completed");
   });
 
   it("marks notifications read and dismissed with audit logs", async () => {
@@ -445,6 +767,30 @@ async function seedRepository(
   });
 }
 
+async function seedPrivateRepository(
+  store: ReturnType<typeof createDevPersistenceStore>,
+  name: string,
+) {
+  return store.upsertRepository({
+    projectId: "proj_dev",
+    provider: "github",
+    owner: "acme",
+    name,
+    defaultBranch: "main",
+    url: `https://github.com/acme/${name}`,
+    installationId: "98765",
+    isPrivate: true,
+    connectionType: "github_app",
+    canScan: true,
+    canMonitor: true,
+    canOpenPr: false,
+    permissionsSummary: {
+      contents: "read",
+      pullRequests: "read",
+    },
+  });
+}
+
 async function createVulnerableRepo(): Promise<string> {
   const repositoryPath = await mkdtemp(join(tmpdir(), "autocyber-queue-repo-"));
   await writeFile(
@@ -501,5 +847,41 @@ function createFinding(input: {
     remediationSummary: "Fix this issue.",
     verificationStrategy: "Rerun scanner.",
     autofixAvailable: false,
+  };
+}
+
+function createScannerResult(input: {
+  repositoryPath: string;
+  repositoryId: string;
+  scanJobId: string;
+  findingId: string;
+  findingRepositoryId: string;
+  findingScanJobId: string;
+  severity?: "critical" | "high" | "medium" | "low" | "info";
+}): ScannerResult {
+  return {
+    scanner: "local",
+    repositoryPath: input.repositoryPath,
+    repositoryId: input.repositoryId,
+    scanJobId: input.scanJobId,
+    projectProfile: {
+      frameworks: ["nextjs"],
+      languages: ["typescript"],
+      integrations: [],
+      deploymentProviders: [],
+      packageManagers: ["pnpm"],
+    },
+    findings: [
+      createFinding({
+        id: input.findingId,
+        repositoryId: input.findingRepositoryId,
+        scanJobId: input.findingScanJobId,
+        severity: input.severity ?? "high",
+        title: "Context-bound finding",
+      }),
+    ],
+    filesScanned: 1,
+    rulesRun: ["missing-api-auth"],
+    errors: [],
   };
 }

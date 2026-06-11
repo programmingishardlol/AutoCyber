@@ -31,6 +31,7 @@ export type VerificationStatus = "not_started" | "running" | "passed" | "failed"
 export type PullRequestStatus = "not_created" | "draft" | "open" | "merged" | "closed";
 
 export type IntegrationStatus = "not_connected" | "connected" | "needs_attention";
+export type GitHubInstallationStatus = "connected" | "disconnected" | "revoked" | "error";
 export type NotificationStatus = "unread" | "read" | "dismissed";
 export type NotificationType =
   | "scan_failed"
@@ -101,6 +102,21 @@ export interface Repository {
   canOpenPr: boolean;
   permissionsSummary: Record<string, string | boolean | null>;
   lastScannedAt: ISODateTime | null;
+  createdAt: ISODateTime;
+  updatedAt: ISODateTime;
+}
+
+export interface GitHubInstallation {
+  id: ID;
+  installationId: string;
+  teamId: ID;
+  userId: ID;
+  accountLogin: string;
+  accountType: string;
+  status: GitHubInstallationStatus;
+  repositorySelection: string;
+  repositoryCount: number;
+  permissionsSummary: Record<string, string | boolean | null>;
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
 }

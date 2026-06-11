@@ -42,6 +42,45 @@ describe("public GitHub ingestion", () => {
     await expect(stat(clonedPath)).rejects.toThrow();
   });
 
+  it("uses isolated temporary directories for separate public clone scans", async () => {
+    const workdir = join(tmpdir(), `autocyber-github-isolation-test-${Date.now()}`);
+    const clonedPaths: string[] = [];
+
+    await clonePublicGitHubRepository({
+      repoUrl: "https://github.com/openai/codex",
+      workdir,
+      runGit: async (_command, args) => {
+        const clonedPath = String(args.at(-1));
+        clonedPaths.push(clonedPath);
+        await mkdir(clonedPath, { recursive: true });
+        await writeFile(join(clonedPath, "README.md"), "first clone");
+      },
+      scan: async (repositoryPath) => {
+        expect(repositoryPath).toBe(clonedPaths[0]);
+        return { repositoryPath };
+      }
+    });
+    await clonePublicGitHubRepository({
+      repoUrl: "https://github.com/openai/codex",
+      workdir,
+      runGit: async (_command, args) => {
+        const clonedPath = String(args.at(-1));
+        clonedPaths.push(clonedPath);
+        await mkdir(clonedPath, { recursive: true });
+        await writeFile(join(clonedPath, "README.md"), "second clone");
+      },
+      scan: async (repositoryPath) => {
+        expect(repositoryPath).toBe(clonedPaths[1]);
+        return { repositoryPath };
+      }
+    });
+
+    expect(clonedPaths).toHaveLength(2);
+    expect(clonedPaths[0]).not.toBe(clonedPaths[1]);
+    await expect(stat(clonedPaths[0]!)).rejects.toThrow();
+    await expect(stat(clonedPaths[1]!)).rejects.toThrow();
+  });
+
   it("returns a safe private-repo-aware message when public clone fails", async () => {
     await expect(
       clonePublicGitHubRepository({
