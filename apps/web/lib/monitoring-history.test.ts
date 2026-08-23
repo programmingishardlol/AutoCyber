@@ -1,15 +1,38 @@
 import { describe, expect, it } from "vitest";
 import type { MonitoringHistoryItem } from "./monitoring-history";
-import { getMonitoringHistory, summarizeMonitoringHistory } from "./monitoring-history";
+import {
+  getMonitoringHistory,
+  summarizeMonitoringHistory,
+} from "./monitoring-history";
 import { createDevPersistenceStore } from "./persistence/store";
 
 describe("monitoring history display helpers", () => {
   it("summarizes queued, running, completed, and failed scan states", () => {
     const items: MonitoringHistoryItem[] = [
-      historyItem("scan_queued", "queued", 0),
-      historyItem("scan_running", "running", 0),
-      historyItem("scan_completed", "completed", 3),
-      historyItem("scan_failed", "failed", 0, "AutoCyber could not complete the monitoring scan.")
+      historyItem("scan_queued", "queued", 0, null, {
+        new: 0,
+        existing: 0,
+        resolved: 0,
+        reappeared: 0,
+      }),
+      historyItem("scan_running", "running", 0, null, {
+        new: 0,
+        existing: 0,
+        resolved: 0,
+        reappeared: 0,
+      }),
+      historyItem("scan_completed", "completed", 3, null, {
+        new: 1,
+        existing: 1,
+        resolved: 1,
+        reappeared: 0,
+      }),
+      historyItem(
+        "scan_failed",
+        "failed",
+        0,
+        "AutoCyber could not complete the monitoring scan.",
+      ),
     ];
 
     const summary = summarizeMonitoringHistory(items);
@@ -20,9 +43,15 @@ describe("monitoring history display helpers", () => {
       queued: 1,
       running: 1,
       completed: 1,
-      failed: 1
+      failed: 1,
     });
     expect(summary.findingCount).toBe(3);
+    expect(summary.lifecycle).toEqual({
+      new: 1,
+      existing: 1,
+      resolved: 1,
+      reappeared: 0,
+    });
     expect(summary.hasFailures).toBe(true);
   });
 
@@ -76,7 +105,18 @@ describe("monitoring history display helpers", () => {
   });
 });
 
-function historyItem(id: string, status: MonitoringHistoryItem["status"], findingCount: number, error: string | null = null): MonitoringHistoryItem {
+function historyItem(
+  id: string,
+  status: MonitoringHistoryItem["status"],
+  findingCount: number,
+  error: string | null = null,
+  lifecycle: MonitoringHistoryItem["lifecycle"] = {
+    new: 0,
+    existing: 0,
+    resolved: 0,
+    reappeared: 0,
+  },
+): MonitoringHistoryItem {
   return {
     id,
     repositoryId: "repo_demo",
@@ -88,8 +128,12 @@ function historyItem(id: string, status: MonitoringHistoryItem["status"], findin
     webhookDeliveryId: `delivery-${id}`,
     pullRequestNumber: id === "scan_completed" ? 42 : null,
     findingCount,
+    lifecycle,
     error,
     startedAt: null,
-    completedAt: status === "completed" || status === "failed" ? "2026-06-04T10:00:00.000Z" : null
+    completedAt:
+      status === "completed" || status === "failed"
+        ? "2026-06-04T10:00:00.000Z"
+        : null,
   };
 }

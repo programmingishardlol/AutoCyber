@@ -3,8 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScannerResult } from "@autocyber/scanner";
+import { createFindingFingerprint } from "./finding-lifecycle";
 import { createDevPersistenceStore } from "./persistence/store";
-import { enqueueScanJob, processQueuedScanJobs, processScanJob, retryScanJob } from "./scan-queue";
+import {
+  enqueueScanJob,
+  processQueuedScanJobs,
+  processScanJob,
+  retryScanJob,
+} from "./scan-queue";
 
 describe("Stage 6C scan queue", () => {
   beforeEach(() => {
@@ -364,23 +370,40 @@ describe("Stage 6C scan queue", () => {
     });
 
     const snapshot = store.snapshot();
-    expect(snapshot.scanJobs.find((scan) => scan.id === scanA.id)).toMatchObject({
+    expect(
+      snapshot.scanJobs.find((scan) => scan.id === scanA.id),
+    ).toMatchObject({
       repositoryId: repoA.id,
       status: "completed",
     });
-    expect(snapshot.scanJobs.find((scan) => scan.id === scanB.id)).toMatchObject({
+    expect(
+      snapshot.scanJobs.find((scan) => scan.id === scanB.id),
+    ).toMatchObject({
       repositoryId: repoB.id,
       status: "completed",
     });
-    expect(snapshot.findings.filter((finding) => finding.repositoryId === repoA.id)).toHaveLength(1);
-    expect(snapshot.findings.filter((finding) => finding.repositoryId === repoB.id)).toHaveLength(1);
-    expect(snapshot.findings.find((finding) => finding.repositoryId === repoA.id)?.scanJobId).toBe(scanA.id);
-    expect(snapshot.findings.find((finding) => finding.repositoryId === repoB.id)?.scanJobId).toBe(scanB.id);
+    expect(
+      snapshot.findings.filter((finding) => finding.repositoryId === repoA.id),
+    ).toHaveLength(1);
+    expect(
+      snapshot.findings.filter((finding) => finding.repositoryId === repoB.id),
+    ).toHaveLength(1);
+    expect(
+      snapshot.findings.find((finding) => finding.repositoryId === repoA.id)
+        ?.scanJobId,
+    ).toBe(scanA.id);
+    expect(
+      snapshot.findings.find((finding) => finding.repositoryId === repoB.id)
+        ?.scanJobId,
+    ).toBe(scanB.id);
   });
 
   it("normalizes helper output to the active repository and scan context before saving findings and notifications", async () => {
     const store = createDevPersistenceStore();
-    const repository = await seedPrivateRepository(store, "context-private-app");
+    const repository = await seedPrivateRepository(
+      store,
+      "context-private-app",
+    );
     const scanJob = await enqueueScanJob(store, {
       repositoryId: repository.id,
       source: "pull_request",
@@ -402,8 +425,12 @@ describe("Stage 6C scan queue", () => {
         }),
     });
     const snapshot = store.snapshot();
-    const finding = snapshot.findings.find((candidate) => candidate.id === "finding_helper_plain");
-    const findingNotification = snapshot.notifications.find((notification) => notification.findingId === "finding_helper_plain");
+    const finding = snapshot.findings.find(
+      (candidate) => candidate.id === "finding_helper_plain",
+    );
+    const findingNotification = snapshot.notifications.find(
+      (notification) => notification.findingId === "finding_helper_plain",
+    );
 
     expect(result.status).toBe("completed");
     expect(finding).toMatchObject({
@@ -418,7 +445,10 @@ describe("Stage 6C scan queue", () => {
 
   it("fails safely before persistence when a finding id encodes a different scan context", async () => {
     const store = createDevPersistenceStore();
-    const repository = await seedPrivateRepository(store, "mismatched-context-app");
+    const repository = await seedPrivateRepository(
+      store,
+      "mismatched-context-app",
+    );
     const scanJob = await enqueueScanJob(store, {
       repositoryId: repository.id,
       source: "push",
@@ -495,7 +525,9 @@ describe("Stage 6C scan queue", () => {
           severity: "low",
         }),
     });
-    const notificationFindingIds = store.snapshot().notifications.map((notification) => notification.findingId);
+    const notificationFindingIds = store
+      .snapshot()
+      .notifications.map((notification) => notification.findingId);
 
     expect(notificationFindingIds).not.toContain("finding_stale_high");
     expect(store.snapshot().notifications).toEqual([
@@ -520,7 +552,8 @@ describe("Stage 6C scan queue", () => {
     });
 
     await processScanJob(store, scanJob.id, {
-      fetchPublicGitHubRepository: async (input) => input.scan("/tmp/autocyber-test"),
+      fetchPublicGitHubRepository: async (input) =>
+        input.scan("/tmp/autocyber-test"),
       scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) => ({
         scanner: "local",
         repositoryPath: "/tmp/autocyber-test",
@@ -581,6 +614,215 @@ describe("Stage 6C scan queue", () => {
     expect(JSON.stringify(snapshot.notifications)).not.toContain("token_value");
   });
 
+  it("adds fix decision memory context to new high-risk finding notifications", async () => {
+    const store = createDevPersistenceStore();
+    const repository = await seedRepository(store);
+    const scanJob = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "memory-notification",
+      webhookDeliveryId: "delivery-memory-notification",
+      pullRequestNumber: null,
+    });
+    const finding = createFinding({
+      id: "finding_memory_notification",
+      repositoryId: repository.id,
+      scanJobId: scanJob.id,
+      severity: "high",
+      title: "High risk auth bypass",
+    });
+    await store.recordFixDecisionMemory({
+      repositoryId: repository.id,
+      findingFingerprint: createFindingFingerprint(finding),
+      ruleId: finding.ruleId,
+      decisionType: "fix_accepted",
+      findingId: finding.id,
+      rationale: "Use the accepted auth guard.",
+    });
+
+    await processScanJob(store, scanJob.id, {
+      fetchPublicGitHubRepository: async (input) =>
+        input.scan("/tmp/autocyber-test"),
+      scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) => ({
+        scanner: "local",
+        repositoryPath: "/tmp/autocyber-test",
+        repositoryId,
+        scanJobId,
+        projectProfile: {
+          frameworks: ["nextjs"],
+          languages: ["typescript"],
+          integrations: [],
+          deploymentProviders: [],
+          packageManagers: ["pnpm"],
+        },
+        findings: [finding],
+        filesScanned: 1,
+        rulesRun: ["missing-api-auth"],
+        errors: [],
+      }),
+    });
+
+    const notification = store
+      .snapshot()
+      .notifications.find(
+        (candidate) => candidate.type === "high_severity_finding_detected",
+      );
+    expect(notification?.message).toContain(
+      "Previously accepted fix pattern available.",
+    );
+    expect(notification?.message).toContain("Priority: critical action.");
+    expect(notification?.message).toContain(
+      "Top reason: Public API route involved.",
+    );
+  });
+
+  it("notifies only for new and reappeared high-risk findings across repeated scans", async () => {
+    const store = createDevPersistenceStore();
+    const repository = await seedRepository(store);
+    const firstScan = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "first",
+      webhookDeliveryId: "delivery-first",
+      pullRequestNumber: null,
+    });
+
+    await processScanJob(store, firstScan.id, {
+      fetchPublicGitHubRepository: async (input) =>
+        input.scan("/tmp/autocyber-test"),
+      scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) =>
+        createScannerResult({
+          repositoryPath: "/tmp/autocyber-test",
+          repositoryId,
+          scanJobId,
+          findingId: `${scanJobId}:local:missing-api-auth:first`,
+          findingRepositoryId: repositoryId,
+          findingScanJobId: scanJobId,
+          severity: "high",
+        }),
+    });
+
+    const secondScan = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "second",
+      webhookDeliveryId: "delivery-second",
+      pullRequestNumber: null,
+    });
+
+    await processScanJob(store, secondScan.id, {
+      fetchPublicGitHubRepository: async (input) =>
+        input.scan("/tmp/autocyber-test"),
+      scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) =>
+        createScannerResult({
+          repositoryPath: "/tmp/autocyber-test",
+          repositoryId,
+          scanJobId,
+          findingId: `${scanJobId}:local:missing-api-auth:second`,
+          findingRepositoryId: repositoryId,
+          findingScanJobId: scanJobId,
+          severity: "high",
+        }),
+    });
+
+    const findingNotifications = store
+      .snapshot()
+      .notifications.filter(
+        (notification) =>
+          notification.type === "high_severity_finding_detected",
+      );
+    const secondScanFinding = store
+      .snapshot()
+      .findings.find((finding) => finding.scanJobId === secondScan.id);
+
+    expect(secondScanFinding).toMatchObject({
+      lifecycleStatus: "existing",
+      occurrenceCount: 2,
+    });
+    expect(findingNotifications).toHaveLength(1);
+    expect(findingNotifications[0]?.scanJobId).toBe(firstScan.id);
+  });
+
+  it("suppresses high-risk notifications for findings remembered as false positives", async () => {
+    const store = createDevPersistenceStore();
+    const repository = await seedRepository(store);
+    const firstScan = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "false-positive-first",
+      webhookDeliveryId: "delivery-fp-first",
+      pullRequestNumber: null,
+    });
+
+    await processScanJob(store, firstScan.id, {
+      fetchPublicGitHubRepository: async (input) =>
+        input.scan("/tmp/autocyber-test"),
+      scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) =>
+        createScannerResult({
+          repositoryPath: "/tmp/autocyber-test",
+          repositoryId,
+          scanJobId,
+          findingId: `${scanJobId}:local:missing-api-auth:fp-first`,
+          findingRepositoryId: repositoryId,
+          findingScanJobId: scanJobId,
+          severity: "high",
+        }),
+    });
+
+    const firstFinding = store
+      .snapshot()
+      .findings.find((finding) => finding.scanJobId === firstScan.id)!;
+    await store.markFindingFalsePositive(firstFinding.id);
+
+    const secondScan = await enqueueScanJob(store, {
+      repositoryId: repository.id,
+      source: "push",
+      branch: "main",
+      commitSha: "false-positive-second",
+      webhookDeliveryId: "delivery-fp-second",
+      pullRequestNumber: null,
+    });
+
+    await processScanJob(store, secondScan.id, {
+      fetchPublicGitHubRepository: async (input) =>
+        input.scan("/tmp/autocyber-test"),
+      scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) =>
+        createScannerResult({
+          repositoryPath: "/tmp/autocyber-test",
+          repositoryId,
+          scanJobId,
+          findingId: `${scanJobId}:local:missing-api-auth:fp-second`,
+          findingRepositoryId: repositoryId,
+          findingScanJobId: scanJobId,
+          severity: "high",
+        }),
+    });
+
+    const secondFinding = store
+      .snapshot()
+      .findings.find((finding) => finding.scanJobId === secondScan.id);
+
+    expect(secondFinding).toMatchObject({
+      status: "false_positive",
+      memoryStatus: "false_positive_suppressed",
+    });
+    expect(
+      store
+        .snapshot()
+        .notifications.filter(
+          (notification) =>
+            notification.type === "high_severity_finding_detected",
+        ),
+    ).toHaveLength(1);
+    expect(store.snapshot().auditLogs.map((log) => log.action)).toContain(
+      "false_positive_marked",
+    );
+  });
+
   it("does not create noisy notifications for low or info findings", async () => {
     const store = createDevPersistenceStore();
     const repository = await seedRepository(store);
@@ -594,7 +836,8 @@ describe("Stage 6C scan queue", () => {
     });
 
     await processScanJob(store, scanJob.id, {
-      fetchPublicGitHubRepository: async (input) => input.scan("/tmp/autocyber-test"),
+      fetchPublicGitHubRepository: async (input) =>
+        input.scan("/tmp/autocyber-test"),
       scanRepositoryPath: async (_repositoryPath, repositoryId, scanJobId) => ({
         scanner: "local",
         repositoryPath: "/tmp/autocyber-test",
@@ -687,17 +930,25 @@ describe("Stage 6C scan queue", () => {
       failed: 0,
       remainingQueued: 1,
     });
-    expect(snapshot.scanJobs.find((scan) => scan.id === completedScan.id)).toMatchObject({
+    expect(
+      snapshot.scanJobs.find((scan) => scan.id === completedScan.id),
+    ).toMatchObject({
       status: "completed",
       commitSha: "completed123",
     });
-    expect(snapshot.scanJobs.find((scan) => scan.id === firstQueuedScan.id)).toMatchObject({
+    expect(
+      snapshot.scanJobs.find((scan) => scan.id === firstQueuedScan.id),
+    ).toMatchObject({
       status: "completed",
     });
-    expect(snapshot.scanJobs.find((scan) => scan.id === secondQueuedScan.id)).toMatchObject({
+    expect(
+      snapshot.scanJobs.find((scan) => scan.id === secondQueuedScan.id),
+    ).toMatchObject({
       status: "queued",
     });
-    expect(snapshot.notifications.map((notification) => notification.type)).toContain("webhook_scan_completed");
+    expect(
+      snapshot.notifications.map((notification) => notification.type),
+    ).toContain("webhook_scan_completed");
   });
 
   it("marks notifications read and dismissed with audit logs", async () => {

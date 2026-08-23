@@ -1,4 +1,11 @@
-import type { FindingStatus, Severity, StackTag } from "@autocyber/core";
+import type {
+  FindingLifecycleStatus,
+  FindingMemoryStatus,
+  FindingStatus,
+  PriorityBand,
+  Severity,
+  StackTag,
+} from "@autocyber/core";
 
 export const scannerRuleIds = [
   "exposed-secret",
@@ -28,7 +35,7 @@ export const scannerRuleIds = [
   "stripe-exposed-secret-key",
   "ai-route-missing-rate-limit",
   "ai-unsafe-prompt-logging",
-  "ai-client-side-key-usage"
+  "ai-client-side-key-usage",
 ] as const;
 
 export type ScannerRuleId = (typeof scannerRuleIds)[number];
@@ -51,12 +58,23 @@ export interface NormalizedFinding {
   id: string;
   repositoryId: string;
   scanJobId: string;
-  ruleId: ScannerRuleId;
+  ruleId: ScannerRuleId | string;
   title: string;
   category: string;
   severity: Severity;
   confidence: number;
   status: FindingStatus;
+  lifecycleStatus?: FindingLifecycleStatus;
+  firstSeenAt?: string;
+  lastSeenAt?: string;
+  resolvedAt?: string | null;
+  occurrenceCount?: number;
+  fingerprint?: string;
+  previousFindingId?: string | null;
+  memoryStatus?: FindingMemoryStatus;
+  priorityScore?: number;
+  priorityBand?: PriorityBand;
+  priorityReasons?: string[];
   stackTags: StackTag[];
   affectedFile: string;
   evidence: ScannerEvidence[];

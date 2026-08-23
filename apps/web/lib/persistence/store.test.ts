@@ -11,16 +11,22 @@ describe("Stage 5D persistence store", () => {
       owner: "openai",
       name: "codex",
       defaultBranch: "main",
-      url: "https://github.com/openai/codex"
+      url: "https://github.com/openai/codex",
     });
     const scanJob = await store.createScanJob({
       repositoryId: repository.id,
       source: "manual",
       branch: "main",
-      commitSha: "unknown"
+      commitSha: "unknown",
     });
 
-    await store.completeScanJob(scanJob.id, { critical: 0, high: 1, medium: 0, low: 0, info: 0 });
+    await store.completeScanJob(scanJob.id, {
+      critical: 0,
+      high: 1,
+      medium: 0,
+      low: 0,
+      info: 0,
+    });
     await store.saveFindings([
       {
         id: "finding_secret",
@@ -34,19 +40,26 @@ describe("Stage 5D persistence store", () => {
         status: "open",
         stackTags: ["node"],
         affectedFile: ".env",
-        evidence: [{ filePath: ".env", startLine: 1, endLine: 1, snippet: "OPENAI_API_KEY=sk-[REDACTED]" }],
+        evidence: [
+          {
+            filePath: ".env",
+            startLine: 1,
+            endLine: 1,
+            snippet: "OPENAI_API_KEY=sk-[REDACTED]",
+          },
+        ],
         riskExplanation: "Leaked secrets can be abused.",
         remediationSummary: "Remove and rotate the key.",
         verificationStrategy: "Rerun scanner.",
-        autofixAvailable: false
-      }
+        autofixAvailable: false,
+      },
     ]);
     await store.upsertRepoProfileMemory(repository.id, {
       frameworks: ["nextjs"],
       languages: ["typescript"],
       integrations: ["openai"],
       deploymentProviders: ["vercel"],
-      packageManagers: ["pnpm"]
+      packageManagers: ["pnpm"],
     });
 
     const snapshot = store.snapshot();
@@ -58,7 +71,7 @@ describe("Stage 5D persistence store", () => {
       "repo_created",
       "scan_started",
       "scan_completed",
-      "finding_created"
+      "finding_created",
     ]);
   });
 
@@ -76,8 +89,8 @@ describe("Stage 5D persistence store", () => {
       permissionsSummary: {
         contents: "write",
         pullRequests: "write",
-        githubAppPrCreationImplemented: false
-      }
+        githubAppPrCreationImplemented: false,
+      },
     });
     const repository = await store.upsertRepository({
       projectId: "proj_demo",
@@ -87,7 +100,7 @@ describe("Stage 5D persistence store", () => {
       defaultBranch: "main",
       url: "https://github.com/openai/private-codex",
       installationId: "123456",
-      isPrivate: true
+      isPrivate: true,
     });
 
     expect(installation).toMatchObject({
@@ -95,22 +108,24 @@ describe("Stage 5D persistence store", () => {
       teamId: "team_dev",
       userId: "user_dev",
       status: "connected",
-      repositoryCount: 1
+      repositoryCount: 1,
     });
     expect(repository).toMatchObject({
       installationId: "123456",
-      isPrivate: true
+      isPrivate: true,
     });
     await expect(store.getGitHubInstallation("123456")).resolves.toMatchObject({
       accountLogin: "openai",
       permissionsSummary: expect.objectContaining({
         contents: "write",
-        githubAppPrCreationImplemented: false
-      })
+        githubAppPrCreationImplemented: false,
+      }),
     });
-    await expect(store.findGitHubRepository("openai", "private-codex")).resolves.toMatchObject({
+    await expect(
+      store.findGitHubRepository("openai", "private-codex"),
+    ).resolves.toMatchObject({
       installationId: "123456",
-      isPrivate: true
+      isPrivate: true,
     });
   });
 
@@ -131,8 +146,8 @@ describe("Stage 5D persistence store", () => {
       canOpenPr: false,
       permissionsSummary: {
         contents: "read",
-        pullRequests: "read"
-      }
+        pullRequests: "read",
+      },
     });
 
     const updatedRepository = await store.upsertRepository({
@@ -149,8 +164,8 @@ describe("Stage 5D persistence store", () => {
       isPrivate: false,
       permissionsSummary: {
         contents: "public_read",
-        pullRequests: "none"
-      }
+        pullRequests: "none",
+      },
     });
 
     expect(updatedRepository.id).toBe(installedRepository.id);
@@ -160,7 +175,7 @@ describe("Stage 5D persistence store", () => {
       isPrivate: true,
       canScan: true,
       canMonitor: true,
-      canOpenPr: false
+      canOpenPr: false,
     });
   });
 
@@ -177,7 +192,7 @@ describe("Stage 5D persistence store", () => {
       canScan: true,
       canMonitor: false,
       canOpenPr: false,
-      isPrivate: false
+      isPrivate: false,
     });
     const installedRepository = await store.upsertRepository({
       projectId: "proj_demo",
@@ -194,8 +209,8 @@ describe("Stage 5D persistence store", () => {
       canOpenPr: false,
       permissionsSummary: {
         contents: "read",
-        connectionStatus: "connected"
-      }
+        connectionStatus: "connected",
+      },
     });
 
     expect(installedRepository.id).toBe(publicRepository.id);
@@ -205,7 +220,7 @@ describe("Stage 5D persistence store", () => {
       connectionType: "github_app",
       installationId: "123456",
       isPrivate: true,
-      canMonitor: true
+      canMonitor: true,
     });
   });
 
@@ -225,7 +240,7 @@ describe("Stage 5D persistence store", () => {
       verificationPlan: ["Rerun scanner."],
       filesChanged: ["app.ts"],
       createdAt: "2026-06-03T10:00:00.000Z",
-      updatedAt: "2026-06-03T10:00:00.000Z"
+      updatedAt: "2026-06-03T10:00:00.000Z",
     };
     const pullRequest: PullRequestRecord = {
       id: "pr_demo",
@@ -237,7 +252,7 @@ describe("Stage 5D persistence store", () => {
       summary: "Verification passed.",
       url: "https://github.com/example/repo/pull/1",
       createdAt: "2026-06-03T10:03:00.000Z",
-      updatedAt: "2026-06-03T10:03:00.000Z"
+      updatedAt: "2026-06-03T10:03:00.000Z",
     };
 
     await store.saveFixProposal(proposal);
@@ -250,7 +265,7 @@ describe("Stage 5D persistence store", () => {
       testOutputSummary: "scanner-rule passed",
       evidence: ["scanner-rule: passed"],
       createdAt: "2026-06-03T10:02:00.000Z",
-      updatedAt: "2026-06-03T10:02:00.000Z"
+      updatedAt: "2026-06-03T10:02:00.000Z",
     });
     await store.savePullRequest(pullRequest);
 
@@ -258,12 +273,127 @@ describe("Stage 5D persistence store", () => {
     expect(snapshot.fixProposals[0]?.status).toBe("approved");
     expect(snapshot.verificationResults[0]?.status).toBe("passed");
     expect(snapshot.pullRequests[0]?.id).toBe(pullRequest.id);
-    expect(snapshot.securityMemories.map((memory) => memory.kind)).toContain("accepted_fix");
+    expect(snapshot.securityMemories.map((memory) => memory.kind)).toContain(
+      "accepted_fix",
+    );
     expect(snapshot.auditLogs.map((log) => log.action)).toEqual([
       "fix_proposal_created",
+      "fix_decision_memory_recorded",
       "proposal_approved",
       "local_remediation_completed",
-      "github_pr_created"
+      "github_pr_created",
     ]);
+  });
+
+  it("records repository-scoped fix decision memory with hashes, rationale, and audit logs", async () => {
+    const store = createDevPersistenceStore();
+    const proposal: FixProposal = {
+      id: "fix_memory",
+      findingId: "finding_memory",
+      repositoryId: "repo_memory",
+      findingFingerprint: "fp_memory",
+      status: "approved",
+      kind: "patch",
+      title: "Fix auth finding",
+      explanation: "Add an auth check.",
+      proposedPatch: "Require auth before returning data.",
+      diff: "--- a/app/api/user/route.ts\n+++ b/app/api/user/route.ts\n@@\n-return Response.json(data);\n+await auth();\n+return Response.json(data);",
+      risk: "Low.",
+      verificationPlan: ["Rerun scanner."],
+      filesChanged: ["app/api/user/route.ts"],
+      createdAt: "2026-06-15T10:00:00.000Z",
+      updatedAt: "2026-06-15T10:00:00.000Z",
+    };
+
+    await store.recordFixDecisionMemory({
+      repositoryId: proposal.repositoryId,
+      findingFingerprint: "fp_memory",
+      ruleId: "missing-api-auth",
+      decisionType: "fix_rejected",
+      proposal,
+      rationale: "We use middleware for this route.",
+      actorUserId: "user_123",
+    });
+
+    const memories = await store.listFixDecisionMemories({
+      repositoryId: "repo_memory",
+      findingFingerprint: "fp_memory",
+      ruleId: "missing-api-auth",
+    });
+    expect(memories).toEqual([
+      expect.objectContaining({
+        repositoryId: "repo_memory",
+        findingFingerprint: "fp_memory",
+        ruleId: "missing-api-auth",
+        decisionType: "fix_rejected",
+        proposalId: proposal.id,
+        findingId: proposal.findingId,
+        rationale: "We use middleware for this route.",
+        actorUserId: "user_123",
+        patchHash: expect.stringMatching(/^hash_/),
+        recommendedFixHash: expect.stringMatching(/^hash_/),
+      }),
+    ]);
+    expect(JSON.stringify(memories)).not.toContain(
+      "return Response.json(data)",
+    );
+    expect(store.snapshot().auditLogs.map((log) => log.action)).toContain(
+      "fix_decision_memory_recorded",
+    );
+  });
+
+  it("keeps accepted and rejected decision memory scoped to the current repository", async () => {
+    const store = createDevPersistenceStore();
+    const baseProposal: FixProposal = {
+      id: "fix_shared",
+      findingId: "finding_shared",
+      repositoryId: "repo_a",
+      findingFingerprint: "fp_shared",
+      status: "approved",
+      kind: "patch",
+      title: "Fix shared finding",
+      explanation: "Shared proposal.",
+      proposedPatch: "Require auth.",
+      diff: "--- a/a.ts\n+++ b/a.ts\n@@\n-old\n+new",
+      risk: "Low.",
+      verificationPlan: ["Rerun scanner."],
+      filesChanged: ["a.ts"],
+      createdAt: "2026-06-15T10:00:00.000Z",
+      updatedAt: "2026-06-15T10:00:00.000Z",
+    };
+    await store.recordFixDecisionMemory({
+      repositoryId: "repo_a",
+      findingFingerprint: "fp_shared",
+      ruleId: "missing-api-auth",
+      decisionType: "fix_rejected",
+      proposal: baseProposal,
+    });
+    await store.recordFixDecisionMemory({
+      repositoryId: "repo_b",
+      findingFingerprint: "fp_shared",
+      ruleId: "missing-api-auth",
+      decisionType: "fix_accepted",
+      proposal: { ...baseProposal, id: "fix_shared_b", repositoryId: "repo_b" },
+    });
+
+    const repoAContext = await store.getFixDecisionMemoryContext({
+      repositoryId: "repo_a",
+      findingFingerprint: "fp_shared",
+      ruleId: "missing-api-auth",
+      patchHash: "hash_missing",
+      recommendedFixHash: "hash_missing",
+    });
+    const repoBContext = await store.getFixDecisionMemoryContext({
+      repositoryId: "repo_b",
+      findingFingerprint: "fp_shared",
+      ruleId: "missing-api-auth",
+      patchHash: "hash_missing",
+      recommendedFixHash: "hash_missing",
+    });
+
+    expect(repoAContext.previouslyRejected).toBe(true);
+    expect(repoAContext.previouslyAccepted).toBe(false);
+    expect(repoBContext.previouslyAccepted).toBe(true);
+    expect(repoBContext.previouslyRejected).toBe(false);
   });
 });

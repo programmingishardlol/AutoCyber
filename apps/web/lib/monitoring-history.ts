@@ -1,4 +1,8 @@
 import type { ScanJob, ScanStatus } from "@autocyber/core";
+import {
+  emptyFindingLifecycleSummary,
+  summarizeFindingLifecycle,
+} from "./finding-lifecycle";
 import type { PersistenceStore } from "./persistence/store";
 
 export interface MonitoringHistoryItem {
@@ -12,6 +16,12 @@ export interface MonitoringHistoryItem {
   webhookDeliveryId: string | null;
   pullRequestNumber: number | null;
   findingCount: number;
+  lifecycle: {
+    new: number;
+    existing: number;
+    resolved: number;
+    reappeared: number;
+  };
   error: string | null;
   startedAt: string | null;
   completedAt: string | null;
@@ -22,42 +32,68 @@ export interface MonitoringHistorySummary {
   latestStatus: ScanStatus | null;
   byStatus: Record<ScanStatus, number>;
   findingCount: number;
+  lifecycle: {
+    new: number;
+    existing: number;
+    resolved: number;
+    reappeared: number;
+  };
   hasFailures: boolean;
 }
 
-export async function getMonitoringHistory(store: PersistenceStore): Promise<MonitoringHistoryItem[]> {
-  const [repositories, scanJobs, findings] = await Promise.all([store.listRepositories(), store.listScanJobs(), store.listFindings()]);
-  const repositoriesById = new Map(repositories.map((repository) => [repository.id, repository]));
+export async function getMonitoringHistory(
+  store: PersistenceStore,
+): Promise<MonitoringHistoryItem[]> {
+  const [repositories, scanJobs, findings] = await Promise.all([
+    store.listRepositories(),
+    store.listScanJobs(),
+    store.listFindings(),
+  ]);
+  const repositoriesById = new Map(
+    repositories.map((repository) => [repository.id, repository]),
+  );
 
   return [...scanJobs]
     .sort((a, b) => compareScanHistoryOrder(a, b))
     .map((scanJob) => {
       const repository = repositoriesById.get(scanJob.repositoryId);
+      const scanFindings = findings.filter(
+        (finding) => finding.scanJobId === scanJob.id,
+      );
       return {
         id: scanJob.id,
         repositoryId: scanJob.repositoryId,
-        repositoryName: repository ? `${repository.owner}/${repository.name}` : "Unknown repository",
+        repositoryName: repository
+          ? `${repository.owner}/${repository.name}`
+          : "Unknown repository",
         status: scanJob.status,
         source: scanJob.source,
         branch: scanJob.branch,
         commitSha: scanJob.commitSha,
         webhookDeliveryId: scanJob.webhookDeliveryId,
         pullRequestNumber: scanJob.pullRequestNumber,
-        findingCount: findings.filter((finding) => finding.scanJobId === scanJob.id).length,
+        findingCount: scanFindings.length,
+        lifecycle: summarizeFindingLifecycle(scanFindings),
         error: scanJob.error,
         startedAt: scanJob.startedAt,
-        completedAt: scanJob.completedAt
+        completedAt: scanJob.completedAt,
       };
     });
 }
 
-export function summarizeMonitoringHistory(items: MonitoringHistoryItem[]): MonitoringHistorySummary {
+export function summarizeMonitoringHistory(
+  items: MonitoringHistoryItem[],
+): MonitoringHistorySummary {
   return items.reduce<MonitoringHistorySummary>(
     (summary, item, index) => {
       summary.total += 1;
       if (index === 0) summary.latestStatus = item.status;
       summary.byStatus[item.status] += 1;
       summary.findingCount += item.findingCount;
+      summary.lifecycle.new += item.lifecycle.new;
+      summary.lifecycle.existing += item.lifecycle.existing;
+      summary.lifecycle.resolved += item.lifecycle.resolved;
+      summary.lifecycle.reappeared += item.lifecycle.reappeared;
       if (item.status === "failed") summary.hasFailures = true;
       return summary;
     },
@@ -66,15 +102,20 @@ export function summarizeMonitoringHistory(items: MonitoringHistoryItem[]): Moni
       latestStatus: null,
       byStatus: { queued: 0, running: 0, completed: 0, failed: 0 },
       findingCount: 0,
-      hasFailures: false
-    }
+      lifecycle: emptyFindingLifecycleSummary(),
+      hasFailures: false,
+    },
   );
 }
 
 function compareScanHistoryOrder(left: ScanJob, right: ScanJob): number {
-  const priorityDifference = scanStatusPriority(left.status) - scanStatusPriority(right.status);
+  const priorityDifference =
+    scanStatusPriority(left.status) - scanStatusPriority(right.status);
   if (priorityDifference !== 0) return priorityDifference;
-  return compareNullableDates(right.startedAt ?? right.completedAt, left.startedAt ?? left.completedAt);
+  return compareNullableDates(
+    right.startedAt ?? right.completedAt,
+    left.startedAt ?? left.completedAt,
+  );
 }
 
 function scanStatusPriority(status: ScanStatus): number {
@@ -83,7 +124,10 @@ function scanStatusPriority(status: ScanStatus): number {
   return 2;
 }
 
-function compareNullableDates(left: string | null, right: string | null): number {
+function compareNullableDates(
+  left: string | null,
+  right: string | null,
+): number {
   if (!left && !right) return 0;
   if (!left) return -1;
   if (!right) return 1;

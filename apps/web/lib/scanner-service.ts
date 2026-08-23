@@ -3,9 +3,19 @@ import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import type { Repository } from "@autocyber/core";
 import { GitHubAppAuthError } from "./github-app-auth";
-import { clonePublicGitHubRepository, GitHubIngestionError, parsePublicGitHubUrl } from "./github-ingestion";
+import {
+  clonePublicGitHubRepository,
+  GitHubIngestionError,
+  parsePublicGitHubUrl,
+} from "./github-ingestion";
 import { cloneGitHubRepositoryWithInstallationToken } from "./github-private-ingestion";
+import {
+  classifyFindingLifecycle,
+  summarizeFindingLifecycle,
+} from "./finding-lifecycle";
+import { buildFixDecisionMemoryContext } from "./fix-decision-context";
 import { getPersistenceStore } from "./persistence/store";
+import { withFindingPriority } from "./priority-scoring";
 import { normalizeScannerResultForContext } from "./scan-result-context";
 
 export type ScanSource = "local" | "github";
@@ -34,7 +44,11 @@ export interface ScanResponse {
 }
 
 export interface ScanErrorResponse {
-  error: "invalid repo input" | "unsupported source" | "path not allowed" | "scan failed";
+  error:
+    | "invalid repo input"
+    | "unsupported source"
+    | "path not allowed"
+    | "scan failed";
   message: string;
 }
 
@@ -43,9 +57,18 @@ export interface RunScanOptions {
   cloneInstalledRepository?: typeof cloneGitHubRepositoryWithInstallationToken;
 }
 
-const allowedLocalRoots = [resolve(process.cwd()), resolve(process.cwd(), "../.."), resolve(process.cwd(), "../../.."), "/tmp", "/private/tmp"];
+const allowedLocalRoots = [
+  resolve(process.cwd()),
+  resolve(process.cwd(), "../.."),
+  resolve(process.cwd(), "../../.."),
+  "/tmp",
+  "/private/tmp",
+];
 
-export async function runScan(input: ScanRequestInput, options: RunScanOptions = {}): Promise<{ status: number; body: ScanResponse | ScanErrorResponse }> {
+export async function runScan(
+  input: ScanRequestInput,
+  options: RunScanOptions = {},
+): Promise<{ status: number; body: ScanResponse | ScanErrorResponse }> {
   if (input.source === "github") {
     return runGitHubScan(input, options);
   }
@@ -55,8 +78,9 @@ export async function runScan(input: ScanRequestInput, options: RunScanOptions =
       status: 400,
       body: {
         error: "unsupported source",
-        message: "Use source `local` for development scans or `github` for the placeholder flow."
-      }
+        message:
+          "Use source `local` for development scans or `github` for the placeholder flow.",
+      },
     };
   }
 
@@ -65,8 +89,8 @@ export async function runScan(input: ScanRequestInput, options: RunScanOptions =
       status: 400,
       body: {
         error: "invalid repo input",
-        message: "A local repository path is required for local scans."
-      }
+        message: "A local repository path is required for local scans.",
+      },
     };
   }
 
@@ -76,8 +100,9 @@ export async function runScan(input: ScanRequestInput, options: RunScanOptions =
       status: 400,
       body: {
         error: "path not allowed",
-        message: "Local development scans are limited to the workspace, sibling development repositories, or temporary directories."
-      }
+        message:
+          "Local development scans are limited to the workspace, sibling development repositories, or temporary directories.",
+      },
     };
   }
 
@@ -95,26 +120,26 @@ export async function runScan(input: ScanRequestInput, options: RunScanOptions =
       canMonitor: false,
       canOpenPr: false,
       permissionsSummary: {
-        mode: "local_development"
-      }
+        mode: "local_development",
+      },
     });
     const scanJobRecord = await store.createScanJob({
       repositoryId: repository.id,
       source: "manual",
       branch: "local",
-      commitSha: "unknown"
+      commitSha: "unknown",
     });
     const scanJobId = scanJobRecord.id;
     const rawResult = await createLocalScanner().scan({
       repositoryPath,
       repositoryId: input.repositoryId ?? repository.id,
-      scanJobId
+      scanJobId,
     });
     const result = normalizeScannerResultForContext(rawResult, {
       repositoryId: repository.id,
-      scanJobId
+      scanJobId,
     });
-    await persistCompletedScan(result);
+    const persistedResult = await persistCompletedScan(result);
 
     return {
       status: 200,
@@ -122,34 +147,38 @@ export async function runScan(input: ScanRequestInput, options: RunScanOptions =
         scanJob: {
           id: scanJobId,
           status: "completed",
-          source: "local"
+          source: "local",
         },
         repository,
-        result,
-        findings: result.findings,
-        projectProfile: result.projectProfile,
-        errors: result.errors
-      }
+        result: persistedResult,
+        findings: persistedResult.findings,
+        projectProfile: persistedResult.projectProfile,
+        errors: persistedResult.errors,
+      },
     };
   } catch {
     return {
       status: 500,
       body: {
         error: "scan failed",
-        message: "The scanner failed before it could return normalized findings."
-      }
+        message:
+          "The scanner failed before it could return normalized findings.",
+      },
     };
   }
 }
 
-async function runGitHubScan(input: ScanRequestInput, options: RunScanOptions): Promise<{ status: number; body: ScanResponse | ScanErrorResponse }> {
+async function runGitHubScan(
+  input: ScanRequestInput,
+  options: RunScanOptions,
+): Promise<{ status: number; body: ScanResponse | ScanErrorResponse }> {
   if (!input.repoUrl || typeof input.repoUrl !== "string") {
     return {
       status: 400,
       body: {
         error: "invalid repo input",
-        message: "A public GitHub repository URL is required for GitHub scans."
-      }
+        message: "A public GitHub repository URL is required for GitHub scans.",
+      },
     };
   }
 
@@ -159,14 +188,22 @@ async function runGitHubScan(input: ScanRequestInput, options: RunScanOptions): 
       status: 400,
       body: {
         error: "invalid repo input",
-        message: "Enter a public GitHub repository URL like https://github.com/owner/repo."
-      }
+        message:
+          "Enter a public GitHub repository URL like https://github.com/owner/repo.",
+      },
     };
   }
 
   const store = getPersistenceStore();
-  const existingRepository = await store.findGitHubRepository(locator.owner, locator.repo);
-  if (existingRepository?.installationId || existingRepository?.connectionType === "github_app" || existingRepository?.isPrivate) {
+  const existingRepository = await store.findGitHubRepository(
+    locator.owner,
+    locator.repo,
+  );
+  if (
+    existingRepository?.installationId ||
+    existingRepository?.connectionType === "github_app" ||
+    existingRepository?.isPrivate
+  ) {
     return runInstalledGitHubScan(input.repoUrl, existingRepository, options);
   }
 
@@ -185,41 +222,44 @@ async function runGitHubScan(input: ScanRequestInput, options: RunScanOptions): 
     permissionsSummary: {
       contents: "public_read",
       pullRequests: "none",
-      note: "Public URL scans do not grant write access for remediation PRs."
-    }
+      note: "Public URL scans do not grant write access for remediation PRs.",
+    },
   });
   const scanJobRecord = await store.createScanJob({
     repositoryId: repository.id,
     source: "manual",
     branch: "main",
-    commitSha: "unknown"
+    commitSha: "unknown",
   });
 
   try {
-    const rawResult = await (options.clonePublicRepository ?? clonePublicGitHubRepository)({
+    const rawResult = await (
+      options.clonePublicRepository ?? clonePublicGitHubRepository
+    )({
       repoUrl: input.repoUrl,
-      scan: (repositoryPath) => scanRepositoryPath(repositoryPath, repository.id, scanJobRecord.id)
+      scan: (repositoryPath) =>
+        scanRepositoryPath(repositoryPath, repository.id, scanJobRecord.id),
     });
     const result = normalizeScannerResultForContext(rawResult, {
       repositoryId: repository.id,
-      scanJobId: scanJobRecord.id
+      scanJobId: scanJobRecord.id,
     });
 
-    await persistCompletedScan(result);
+    const persistedResult = await persistCompletedScan(result);
     return {
       status: 200,
       body: {
         scanJob: {
           id: scanJobRecord.id,
           status: "completed",
-          source: "github"
+          source: "github",
         },
         repository,
-        result,
-        findings: result.findings,
-        projectProfile: result.projectProfile,
-        errors: result.errors
-      }
+        result: persistedResult,
+        findings: persistedResult.findings,
+        projectProfile: persistedResult.projectProfile,
+        errors: persistedResult.errors,
+      },
     };
   } catch (error) {
     await store.failScanJob(scanJobRecord.id);
@@ -228,8 +268,8 @@ async function runGitHubScan(input: ScanRequestInput, options: RunScanOptions): 
         status: 400,
         body: {
           error: "invalid repo input",
-          message: error.message
-        }
+          message: error.message,
+        },
       };
     }
 
@@ -237,8 +277,9 @@ async function runGitHubScan(input: ScanRequestInput, options: RunScanOptions): 
       status: 500,
       body: {
         error: "scan failed",
-        message: "The public GitHub repository scan failed before it could return normalized findings."
-      }
+        message:
+          "The public GitHub repository scan failed before it could return normalized findings.",
+      },
     };
   }
 }
@@ -246,7 +287,7 @@ async function runGitHubScan(input: ScanRequestInput, options: RunScanOptions): 
 async function runInstalledGitHubScan(
   repoUrl: string,
   repository: Repository,
-  options: RunScanOptions
+  options: RunScanOptions,
 ): Promise<{ status: number; body: ScanResponse | ScanErrorResponse }> {
   const store = getPersistenceStore();
 
@@ -255,8 +296,9 @@ async function runInstalledGitHubScan(
       status: 400,
       body: {
         error: "invalid repo input",
-        message: "Private repository scanning requires GitHub App installation."
-      }
+        message:
+          "Private repository scanning requires GitHub App installation.",
+      },
     };
   }
   const installationId = repository.installationId;
@@ -277,86 +319,157 @@ async function runInstalledGitHubScan(
     permissionsSummary: {
       ...repository.permissionsSummary,
       connectionStatus: "connected",
-      githubAppPrCreationImplemented: false
-    }
+      githubAppPrCreationImplemented: false,
+    },
   });
 
   const scanJobRecord = await store.createScanJob({
     repositoryId: installedRepository.id,
     source: "manual",
     branch: installedRepository.defaultBranch,
-    commitSha: "unknown"
+    commitSha: "unknown",
   });
 
   try {
-    const cloneInstalledRepository = options.cloneInstalledRepository ?? cloneGitHubRepositoryWithInstallationToken;
-    const rawResult: ScannerResult = await cloneInstalledRepository<ScannerResult>({
-      repoUrl: installedRepository.url || repoUrl,
-      installationId,
-      scan: (repositoryPath) => scanRepositoryPath(repositoryPath, installedRepository.id, scanJobRecord.id)
-    });
+    const cloneInstalledRepository =
+      options.cloneInstalledRepository ??
+      cloneGitHubRepositoryWithInstallationToken;
+    const rawResult: ScannerResult =
+      await cloneInstalledRepository<ScannerResult>({
+        repoUrl: installedRepository.url || repoUrl,
+        installationId,
+        scan: (repositoryPath) =>
+          scanRepositoryPath(
+            repositoryPath,
+            installedRepository.id,
+            scanJobRecord.id,
+          ),
+      });
     const result = normalizeScannerResultForContext(rawResult, {
       repositoryId: installedRepository.id,
-      scanJobId: scanJobRecord.id
+      scanJobId: scanJobRecord.id,
     });
 
-    await persistCompletedScan(result);
+    const persistedResult = await persistCompletedScan(result);
     return {
       status: 200,
       body: {
         scanJob: {
           id: scanJobRecord.id,
           status: "completed",
-          source: "github"
+          source: "github",
         },
         repository: installedRepository,
-        result,
-        findings: result.findings,
-        projectProfile: result.projectProfile,
-        errors: result.errors
-      }
+        result: persistedResult,
+        findings: persistedResult.findings,
+        projectProfile: persistedResult.projectProfile,
+        errors: persistedResult.errors,
+      },
     };
   } catch (error) {
     const message =
-      error instanceof GitHubIngestionError || error instanceof GitHubAppAuthError
+      error instanceof GitHubIngestionError ||
+      error instanceof GitHubAppAuthError
         ? error.message
         : "The installed GitHub repository scan failed before it could return normalized findings.";
     await store.failScanJob(scanJobRecord.id, message);
     return {
-      status: error instanceof GitHubIngestionError || error instanceof GitHubAppAuthError ? 400 : 500,
+      status:
+        error instanceof GitHubIngestionError ||
+        error instanceof GitHubAppAuthError
+          ? 400
+          : 500,
       body: {
-        error: error instanceof GitHubIngestionError || error instanceof GitHubAppAuthError ? "invalid repo input" : "scan failed",
-        message
-      }
+        error:
+          error instanceof GitHubIngestionError ||
+          error instanceof GitHubAppAuthError
+            ? "invalid repo input"
+            : "scan failed",
+        message,
+      },
     };
   }
 }
 
-async function scanRepositoryPath(repositoryPath: string, repositoryId: string, scanJobId: string): Promise<ScannerResult> {
+async function scanRepositoryPath(
+  repositoryPath: string,
+  repositoryId: string,
+  scanJobId: string,
+): Promise<ScannerResult> {
   return createLocalScanner().scan({
     repositoryPath,
     repositoryId,
-    scanJobId
+    scanJobId,
   });
 }
 
-async function persistCompletedScan(result: ScannerResult): Promise<void> {
+async function persistCompletedScan(
+  result: ScannerResult,
+): Promise<ScannerResult> {
   const store = getPersistenceStore();
-  await store.saveFindings(result.findings);
-  await store.upsertRepoProfileMemory(result.repositoryId, result.projectProfile);
-  await store.completeScanJob(result.scanJobId, summarizeFindings(result.findings));
+  const previousFindings = await store.listFindings();
+  const falsePositiveFingerprints = await store.listFalsePositiveFingerprints(
+    result.repositoryId,
+  );
+  const lifecycle = classifyFindingLifecycle({
+    repositoryId: result.repositoryId,
+    scanJobId: result.scanJobId,
+    currentFindings: result.findings,
+    previousFindings,
+    falsePositiveFingerprints,
+  });
+  const findings = [
+    ...lifecycle.currentFindings,
+    ...lifecycle.resolvedFindings,
+  ];
+  await store.saveFindings(findings);
+  const decisionMemories = await store.listFixDecisionMemories({
+    repositoryId: result.repositoryId,
+  });
+  const prioritizedFindings = findings.map((finding) =>
+    withFindingPriority(finding, {
+      decisionMemory: buildFixDecisionMemoryContext(
+        decisionMemories.filter(
+          (memory) =>
+            memory.repositoryId === finding.repositoryId &&
+            memory.findingFingerprint === (finding.fingerprint ?? finding.id) &&
+            memory.ruleId === finding.ruleId,
+        ),
+      ),
+    }),
+  );
+  await store.upsertRepoProfileMemory(
+    result.repositoryId,
+    result.projectProfile,
+  );
+  await store.completeScanJob(result.scanJobId, summarizeFindings(findings));
+  return {
+    ...result,
+    findings: prioritizedFindings,
+  };
 }
 
 function summarizeFindings(findings: ScannerResult["findings"]) {
-  return findings.reduce(
+  const activeFindings = findings.filter(
+    (finding) => finding.lifecycleStatus !== "resolved",
+  );
+  const summary = activeFindings.reduce(
     (summary, finding) => {
       summary[finding.severity] += 1;
       return summary;
     },
-    { critical: 0, high: 0, medium: 0, low: 0, info: 0 }
+    { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
   );
+  return {
+    ...summary,
+    lifecycle: summarizeFindingLifecycle(
+      findings.filter((finding) => finding.lifecycleStatus),
+    ),
+  };
 }
 
 function isAllowedLocalPath(path: string): boolean {
-  return allowedLocalRoots.some((root) => path === root || path.startsWith(`${root}/`));
+  return allowedLocalRoots.some(
+    (root) => path === root || path.startsWith(`${root}/`),
+  );
 }
