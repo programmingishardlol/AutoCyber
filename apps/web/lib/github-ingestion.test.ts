@@ -82,10 +82,16 @@ describe("public GitHub ingestion", () => {
   });
 
   it("returns a safe private-repo-aware message when public clone fails", async () => {
+    const workdir = join(tmpdir(), `autocyber-github-failure-test-${Date.now()}`);
+    let clonedPath = "";
+
     await expect(
       clonePublicGitHubRepository({
         repoUrl: "https://github.com/acme/private-app",
-        runGit: async () => {
+        workdir,
+        runGit: async (_command, args) => {
+          clonedPath = String(args.at(-1));
+          await mkdir(clonedPath, { recursive: true });
           throw new Error("fatal: could not read Username for 'https://github.com'");
         },
         scan: async () => ({ ok: true })
@@ -94,5 +100,27 @@ describe("public GitHub ingestion", () => {
       code: "unreachable_public_repo",
       message: expect.stringContaining("Private GitHub monitoring")
     });
+    await expect(stat(clonedPath)).rejects.toThrow();
+  });
+
+  it("removes the temporary clone when scanner execution throws", async () => {
+    const workdir = join(tmpdir(), `autocyber-github-scan-failure-test-${Date.now()}`);
+    let clonedPath = "";
+
+    await expect(
+      clonePublicGitHubRepository({
+        repoUrl: "https://github.com/openai/codex",
+        workdir,
+        runGit: async (_command, args) => {
+          clonedPath = String(args.at(-1));
+          await mkdir(clonedPath, { recursive: true });
+          await writeFile(join(clonedPath, "package.json"), "{}");
+        },
+        scan: async () => {
+          throw new Error("simulated scanner failure");
+        }
+      })
+    ).rejects.toMatchObject({ code: "unreachable_public_repo" });
+    await expect(stat(clonedPath)).rejects.toThrow();
   });
 });

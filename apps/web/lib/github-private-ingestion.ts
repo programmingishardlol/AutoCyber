@@ -1,8 +1,8 @@
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInstallationAccessToken } from "./github-app-auth";
 import { GitHubIngestionError, parsePublicGitHubUrl, type GitRunner } from "./github-ingestion";
+import { createScannerSession, removeScannerSession } from "./scanner-workdir";
 
 export interface CloneGitHubRepositoryWithInstallationTokenInput<T> {
   repoUrl: string;
@@ -24,8 +24,7 @@ export async function cloneGitHubRepositoryWithInstallationToken<T>(
   const tokenFactory = input.createInstallationToken ?? createInstallationAccessToken;
   const token = await tokenFactory(input.installationId);
   const workdir = input.workdir ?? process.env.SCANNER_WORKDIR ?? join(tmpdir(), "autocyber-scans");
-  await mkdir(workdir, { recursive: true });
-  const sessionDir = await mkdtemp(join(workdir, "github-app-"));
+  const sessionDir = await createScannerSession(workdir, "github-app-");
   const destination = join(sessionDir, `${locator.owner}-${locator.repo}`);
 
   try {
@@ -41,7 +40,7 @@ export async function cloneGitHubRepositoryWithInstallationToken<T>(
       "AutoCyber could not fetch the private GitHub repository with the installed GitHub App."
     );
   } finally {
-    await rm(sessionDir, { recursive: true, force: true });
+    await removeScannerSession(sessionDir);
   }
 }
 
