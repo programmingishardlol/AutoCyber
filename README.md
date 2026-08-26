@@ -20,7 +20,7 @@ AutoCyber is an early full-stack prototype with the complete development loop wo
 Detect -> Explain -> Fix -> Verify -> PR -> Remember -> Monitor
 ```
 
-The next product stage is Stage 8 Opinionated Workflows. The next platform milestone is production deployment with Docker, GitHub Actions, and AWS. Docker and AWS infrastructure are not part of the current checkpoint yet.
+The next product stage is Stage 8 Opinionated Workflows. Stage 7.5A production Dockerization is implemented and verified; GitHub Actions and AWS infrastructure are the next platform milestones.
 
 Implemented:
 
@@ -45,6 +45,7 @@ Implemented:
 - Durable security memory for accepted fixes, rejected fixes, manual-fix preferences, false positives, and verified remediations
 - Memory-aware priority scoring and notification de-duplication
 - Copyable, redacted security evidence packs
+- Production Next.js standalone Docker image with non-root execution, health checks, Git-based repository ingestion, and temporary-clone cleanup
 - Drizzle schema and migrations for the current product data model
 
 Prototype or planned:
@@ -53,7 +54,7 @@ Prototype or planned:
 - Production background worker for queued scans
 - Production-grade private repository fetching and PR creation through GitHub App tokens
 - Full security-memory management UI and richer repository profiles
-- Docker image, CI/CD workflows, and AWS infrastructure
+- CI/CD workflows and AWS infrastructure
 - Team onboarding, billing, usage limits, and production auth policy
 - Full setup flows for Vercel, Supabase, Clerk, Stripe, Firebase, Railway, Render, OpenAI, and Anthropic
 - Autonomous remediation beyond human-approved flows
@@ -68,6 +69,7 @@ Stage status:
 - Stage 5 Startup-Stack Integrations: scanner checks implemented for key startup-stack risks
 - Stage 6 Continuous Monitoring: complete for the development prototype with GitHub App metadata, signed webhooks, queued scan jobs, retries, history, and notifications
 - Stage 7 Security Memory: complete and QA-passed with finding lifecycle, decision memory, priority scoring, suppression, and evidence packs
+- Stage 7.5A Production Dockerization: complete and container-verified
 - Stage 8 Opinionated Workflows: next
 
 Known validation boundary: locally signed GitHub webhook handling is tested, but a webhook delivered by a real GitHub App has not been verified because a public callback URL and production GitHub credentials were not available in the test environment.
@@ -298,7 +300,7 @@ Current app routes include:
 - `POST /api/webhooks/github`: validate and process GitHub push or pull request webhooks
 - `POST /api/notifications`: mark notifications read or dismissed
 
-## Docker, CI/CD, And AWS Plan
+## Docker, CI/CD, And AWS
 
 The recommended first production architecture is:
 
@@ -312,17 +314,59 @@ Developer -> GitHub -> GitHub Actions -> Amazon ECR -> Amazon ECS Fargate
 
 Use one immutable container image for both staging and production. Inject environment-specific configuration at runtime; never bake `.env.local`, API keys, database URLs, GitHub private keys, or webhook secrets into the image.
 
-### Phase 1: Dockerize AutoCyber
+### Phase 1: Production Dockerization - Implemented
 
-1. Enable Next.js standalone output so the runtime image contains only traced production files.
-2. Add a multi-stage `Dockerfile` with dependency, build, and non-root runtime stages.
-3. Add `.dockerignore` entries for Git history, local environment files, private Markdown, dependencies, build caches, test output, and local scanner data.
-4. Copy `public` and `.next/static` into the standalone runtime image.
-5. Expose port `3000` and use `GET /api/health` for the container health check.
-6. Mount or allocate writable temporary storage for `SCANNER_WORKDIR`; repository clones and remediation working copies must remain temporary.
-7. Build and run the image locally with explicit environment variables, then test health, a public GitHub scan, findings, fix proposals, verification, monitoring, memory, and evidence packs.
+Build the image without server secrets:
 
-Docker should package the app consistently. It does not replace Supabase, GitHub credentials, webhook delivery, or durable background-job processing.
+```bash
+docker build --tag autocyber:local .
+```
+
+When Clerk is enabled, its publishable browser key must be available during the Next.js build. It is intentionally public; do not pass `CLERK_SECRET_KEY` or any other server secret as a build argument.
+
+```bash
+docker build \
+  --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_publishable_key \
+  --tag autocyber:local .
+```
+
+Run a local in-memory container:
+
+```bash
+docker run --rm \
+  --publish 3000:3000 \
+  --env AUTOCYBER_PERSISTENCE=dev \
+  autocyber:local
+```
+
+For durable operation, supply runtime values from a private environment file or secret manager:
+
+```bash
+docker run --rm \
+  --publish 3000:3000 \
+  --env-file .env.production.local \
+  autocyber:local
+```
+
+Required durable-persistence values are `AUTOCYBER_PERSISTENCE=database` and either `DATABASE_URL` or `SUPABASE_DATABASE_URL`. Apply the included migrations before starting database mode. Add Clerk, GitHub App, webhook, queue-worker, or token values only for the corresponding feature.
+
+Verify liveness:
+
+```bash
+curl --fail http://localhost:3000/api/health
+```
+
+The runtime image:
+
+- uses pinned Node.js 22 and the repository-pinned pnpm version during builds
+- runs as the unprivileged `node` user
+- includes `git` and CA certificates for HTTPS repository cloning
+- stores unique clone sessions under `/tmp/autocyber-scans`
+- removes clone sessions after successful scans, clone failures, and scanner exceptions
+- prunes clone sessions abandoned for more than 24 hours
+- contains no local environment files, private Markdown, keys, tests, or scanner fixtures
+
+Public and GitHub App repository scans work without mounting source code. Local-path scans require explicitly mounting the target repository into the container. Docker does not replace Supabase, credentials, webhook delivery, or durable background-job processing.
 
 ### Phase 2: Add Continuous Integration
 

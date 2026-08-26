@@ -4,6 +4,6 @@ export function GET() {
   return NextResponse.json({
     ok: true,
     service: "autocyber-web",
-    stage: "stage-0-foundation"
+    stage: "stage-7-security-memory",
   });
 }
