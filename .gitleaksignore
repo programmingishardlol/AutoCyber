@@ -1,0 +1,3 @@
+# Synthetic credentials committed as scanner/redaction test fixtures.
+e7bf7901fb8f7fb013919a25044fcbeb09c09a25:apps/web/lib/evidence-pack.test.ts:private-key:125
+ee57d228402ea93fd9b5d97b1a5b7001dd065228:packages/scanner/src/tests/stage5-startup-stack-rules.test.ts:stripe-access-token:14
