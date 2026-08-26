@@ -1,4 +1,11 @@
-import type { FindingEvidence, FindingStatus, FixProposal, FixProposalStatus, Severity, StackTag } from "@autocyber/core";
+import type {
+  FindingEvidence,
+  FindingStatus,
+  FixProposal,
+  FixProposalStatus,
+  Severity,
+  StackTag,
+} from "@autocyber/core";
 
 export type RemediationRuleId =
   | "exposed-secret"
@@ -18,6 +25,7 @@ export type RemediationRuleId =
 export interface RemediationFinding {
   id: string;
   repositoryId: string;
+  fingerprint?: string;
   ruleId?: RemediationRuleId;
   title: string;
   category: string;
@@ -47,7 +55,13 @@ export interface GenerateFixProposalOptions {
   now?: string;
 }
 
-export type RemediationExecutionStatus = "pending" | "approved" | "applying" | "verifying" | "verified" | "failed";
+export type RemediationExecutionStatus =
+  | "pending"
+  | "approved"
+  | "applying"
+  | "verifying"
+  | "verified"
+  | "failed";
 
 export type RemediationCheckStatus = "passed" | "failed" | "skipped";
 
@@ -93,7 +107,11 @@ export interface GitHubRepositoryTarget {
   repoUrl: string;
 }
 
-export type GitHubPrRemediationStatus = "blocked" | "creating_branch" | "pr_created" | "failed";
+export type GitHubPrRemediationStatus =
+  | "blocked"
+  | "creating_branch"
+  | "pr_created"
+  | "failed";
 
 export interface GitHubPrRemediationResult {
   id: string;

@@ -21,17 +21,53 @@ export type FindingStatus =
   | "false_positive"
   | "resolved";
 
+export type FindingLifecycleStatus =
+  | "new"
+  | "existing"
+  | "resolved"
+  | "reappeared";
+export type FindingMemoryStatus = "none" | "false_positive_suppressed";
+export type PriorityBand =
+  | "critical_action"
+  | "high_priority"
+  | "review_needed"
+  | "monitor"
+  | "resolved";
+
 export type ScanStatus = "queued" | "running" | "completed" | "failed";
 
 export type FixProposalStatus = "draft" | "approved" | "rejected";
 export type FixProposalKind = "patch" | "advisory";
+export type FixDecisionType =
+  | "fix_accepted"
+  | "fix_rejected"
+  | "remediation_applied"
+  | "advisory_acknowledged"
+  | "false_positive"
+  | "manual_fix_preferred";
 
-export type VerificationStatus = "not_started" | "running" | "passed" | "failed";
+export type VerificationStatus =
+  | "not_started"
+  | "running"
+  | "passed"
+  | "failed";
 
-export type PullRequestStatus = "not_created" | "draft" | "open" | "merged" | "closed";
+export type PullRequestStatus =
+  | "not_created"
+  | "draft"
+  | "open"
+  | "merged"
+  | "closed";
 
-export type IntegrationStatus = "not_connected" | "connected" | "needs_attention";
-export type GitHubInstallationStatus = "connected" | "disconnected" | "revoked" | "error";
+export type IntegrationStatus =
+  | "not_connected"
+  | "connected"
+  | "needs_attention";
+export type GitHubInstallationStatus =
+  | "connected"
+  | "disconnected"
+  | "revoked"
+  | "error";
 export type NotificationStatus = "unread" | "read" | "dismissed";
 export type NotificationType =
   | "scan_failed"
@@ -139,7 +175,15 @@ export interface ScanJob {
     medium: number;
     low: number;
     info: number;
+    lifecycle?: FindingLifecycleSummary;
   };
+}
+
+export interface FindingLifecycleSummary {
+  new: number;
+  existing: number;
+  resolved: number;
+  reappeared: number;
 }
 
 export interface FindingEvidence {
@@ -159,6 +203,17 @@ export interface Finding {
   severity: Severity;
   confidence: number;
   status: FindingStatus;
+  lifecycleStatus: FindingLifecycleStatus;
+  firstSeenAt: ISODateTime;
+  lastSeenAt: ISODateTime;
+  resolvedAt: ISODateTime | null;
+  occurrenceCount: number;
+  fingerprint: string;
+  previousFindingId: ID | null;
+  memoryStatus: FindingMemoryStatus;
+  priorityScore?: number;
+  priorityBand?: PriorityBand;
+  priorityReasons?: string[];
   stackTags: StackTag[];
   affectedFile: string;
   evidence: FindingEvidence[];
@@ -174,6 +229,8 @@ export interface FixProposal {
   id: ID;
   findingId: ID;
   repositoryId: ID;
+  findingFingerprint?: string;
+  ruleId?: string;
   status: FixProposalStatus;
   kind: FixProposalKind;
   title: string;
@@ -183,6 +240,41 @@ export interface FixProposal {
   risk: string;
   verificationPlan: string[];
   filesChanged: string[];
+  patchHash?: string | null;
+  recommendedFixHash?: string | null;
+  decisionMemory?: FixDecisionMemoryContext;
+  priorityScore?: number;
+  priorityBand?: PriorityBand;
+  priorityReasons?: string[];
+  createdAt: ISODateTime;
+  updatedAt: ISODateTime;
+}
+
+export interface FixDecisionMemoryContext {
+  previouslyAccepted: boolean;
+  previouslyRejected: boolean;
+  manualFixPreferred: boolean;
+  falsePositiveMemory: boolean;
+  samePatchPreviouslyRejected: boolean;
+  latestDecisionType: FixDecisionType | null;
+  latestDecisionAt: ISODateTime | null;
+  latestRationale: string | null;
+}
+
+export interface FixDecisionMemory {
+  id: ID;
+  teamId: ID;
+  repositoryId: ID;
+  findingFingerprint: string;
+  ruleId: string;
+  decisionType: FixDecisionType;
+  proposalId: ID | null;
+  findingId: ID | null;
+  rationale: string | null;
+  patchHash: string | null;
+  recommendedFixHash: string | null;
+  proposalKind: FixProposalKind | null;
+  actorUserId: ID | null;
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
 }
@@ -215,7 +307,17 @@ export interface PullRequestRecord {
 export interface Integration {
   id: ID;
   teamId: ID;
-  provider: "github" | "vercel" | "supabase" | "clerk" | "stripe" | "firebase" | "railway" | "render" | "openai" | "anthropic";
+  provider:
+    | "github"
+    | "vercel"
+    | "supabase"
+    | "clerk"
+    | "stripe"
+    | "firebase"
+    | "railway"
+    | "render"
+    | "openai"
+    | "anthropic";
   status: IntegrationStatus;
   displayName: string;
   description: string;
@@ -226,10 +328,21 @@ export interface SecurityMemory {
   id: ID;
   teamId?: ID;
   repositoryId: ID;
-  kind: "architecture" | "repo_profile" | "accepted_fix" | "rejected_fix" | "false_positive" | "preference";
+  kind:
+    | "architecture"
+    | "repo_profile"
+    | "accepted_fix"
+    | "rejected_fix"
+    | "false_positive"
+    | "preference";
   title: string;
   content: string;
-  source: "human" | "autocyber" | "scanner_observed" | "user_approved" | "user_rejected";
+  source:
+    | "human"
+    | "autocyber"
+    | "scanner_observed"
+    | "user_approved"
+    | "user_rejected";
   confidence?: "high" | "medium" | "low";
   createdAt: ISODateTime;
   updatedAt?: ISODateTime;

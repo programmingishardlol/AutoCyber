@@ -46,13 +46,22 @@ describe("private GitHub ingestion", () => {
   });
 
   it("returns a safe error and does not leak the installation token when clone fails", async () => {
+    const workdir = join(
+      tmpdir(),
+      `autocyber-github-private-failure-${Date.now()}`,
+    );
+    let clonedPath = "";
+
     await expect(
       cloneGitHubRepositoryWithInstallationToken({
         repoUrl: "https://github.com/acme/private-app",
         installationId: "12345",
+        workdir,
         createInstallationToken: async () =>
           fakeGitHubInstallationToken("secret_installation_token"),
-        runGit: async () => {
+        runGit: async (_command, args) => {
+          clonedPath = String(args.at(-1));
+          await mkdir(clonedPath, { recursive: true });
           throw new Error(
             `fatal: token ${fakeGitHubInstallationToken("secret_installation_token")} failed`,
           );
@@ -64,6 +73,7 @@ describe("private GitHub ingestion", () => {
       message:
         "AutoCyber could not fetch the private GitHub repository with the installed GitHub App.",
     });
+    await expect(stat(clonedPath)).rejects.toThrow();
   });
 });
 

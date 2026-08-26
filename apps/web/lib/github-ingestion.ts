@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { createScannerSession, removeScannerSession } from "./scanner-workdir";
 
 const execFileAsync = promisify(execFile);
 
@@ -68,8 +68,7 @@ export async function clonePublicGitHubRepository<T>(input: ClonePublicGitHubRep
   }
 
   const workdir = input.workdir ?? process.env.SCANNER_WORKDIR ?? join(tmpdir(), "autocyber-scans");
-  await mkdir(workdir, { recursive: true });
-  const sessionDir = await mkdtemp(join(workdir, "github-"));
+  const sessionDir = await createScannerSession(workdir, "github-");
   const destination = join(sessionDir, `${locator.owner}-${locator.repo}`);
 
   try {
@@ -80,7 +79,7 @@ export async function clonePublicGitHubRepository<T>(input: ClonePublicGitHubRep
     if (error instanceof GitHubIngestionError) throw error;
     throw new GitHubIngestionError("unreachable_public_repo", safeCloneMessage(String(error)));
   } finally {
-    await rm(sessionDir, { recursive: true, force: true });
+    await removeScannerSession(sessionDir);
   }
 }
 

@@ -3,13 +3,42 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import type { FixProposal, FixProposalStatus } from "@autocyber/core";
-import type { GitHubPrRemediationResult, GitHubRepositoryTarget, LocalRemediationExecution } from "@autocyber/remediation";
-import { Badge, SeverityBadge, StatusBadge } from "@/components/badge";
+import type {
+  FixDecisionType,
+  FixProposal,
+  FixProposalStatus,
+} from "@autocyber/core";
+import type {
+  GitHubPrRemediationResult,
+  GitHubRepositoryTarget,
+  LocalRemediationExecution,
+} from "@autocyber/remediation";
+import {
+  Badge,
+  PriorityBadge,
+  SeverityBadge,
+  StatusBadge,
+} from "@/components/badge";
 import { PageHeader } from "@/components/page-header";
-import { getFindingStackDisplay, getFixProposalDisplay, type ProposalFindingContext } from "@/lib/fix-proposal-display";
-import { formatFilterLabel, resolveFindingDetail, sortFindingsForDashboard } from "@/lib/findings-dashboard";
-import type { ScanErrorResponse, ScanResponse, ScanSource } from "@/lib/scanner-service";
+import {
+  getFindingStackDisplay,
+  getFixProposalDisplay,
+  type ProposalFindingContext,
+} from "@/lib/fix-proposal-display";
+import {
+  formatFilterLabel,
+  resolveFindingDetail,
+  sortFindingsForDashboard,
+} from "@/lib/findings-dashboard";
+import {
+  formatPriorityBand,
+  scoreFindingPriority,
+} from "@/lib/priority-scoring";
+import type {
+  ScanErrorResponse,
+  ScanResponse,
+  ScanSource,
+} from "@/lib/scanner-service";
 import { formatPercent } from "@/lib/utils";
 
 interface FindingDetailClientProps {
@@ -18,8 +47,13 @@ interface FindingDetailClientProps {
   initialParams: Record<string, string>;
 }
 
-export function FindingDetailClient({ defaultPath, findingId, initialParams }: FindingDetailClientProps) {
-  const source: ScanSource = initialParams.source === "github" ? "github" : "local";
+export function FindingDetailClient({
+  defaultPath,
+  findingId,
+  initialParams,
+}: FindingDetailClientProps) {
+  const source: ScanSource =
+    initialParams.source === "github" ? "github" : "local";
   const path = initialParams.path ?? defaultPath;
   const repoUrl = initialParams.repoUrl ?? "";
   const [scanState, setScanState] = useState<{
@@ -42,12 +76,21 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
     result: GitHubPrRemediationResult | null;
     error: string | null;
   }>({ loading: false, result: null, error: null });
+  const [falsePositiveState, setFalsePositiveState] = useState<{
+    loading: boolean;
+    error: string | null;
+  }>({ loading: false, error: null });
+  const [decisionState, setDecisionState] = useState<{
+    loading: boolean;
+    error: string | null;
+    note: string;
+  }>({ loading: false, error: null, note: "" });
   const [githubTarget, setGithubTarget] = useState<GitHubRepositoryTarget>({
     owner: "",
     repo: "",
     defaultBranch: "main",
     tokenMode: "token",
-    repoUrl: ""
+    repoUrl: "",
   });
 
   useEffect(() => {
@@ -57,11 +100,15 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
     fetch("/api/scans", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(source === "github" ? { source, repoUrl } : { source, path }),
-      signal: controller.signal
+      body: JSON.stringify(
+        source === "github" ? { source, repoUrl } : { source, path },
+      ),
+      signal: controller.signal,
     })
       .then(async (response) => {
-        const body = (await response.json()) as ScanResponse | ScanErrorResponse;
+        const body = (await response.json()) as
+          | ScanResponse
+          | ScanErrorResponse;
         if ("error" in body) {
           setScanState({ loading: false, response: null, error: body });
           return;
@@ -74,15 +121,32 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
         setScanState({
           loading: false,
           response: null,
-          error: { error: "scan failed", message: "The finding detail page could not load scanner output." }
+          error: {
+            error: "scan failed",
+            message: "The finding detail page could not load scanner output.",
+          },
         });
       });
 
     return () => controller.abort();
   }, [source, path, repoUrl]);
 
-  const findings = useMemo(() => sortFindingsForDashboard(scanState.response?.findings ?? []), [scanState.response]);
+  const findings = useMemo(
+    () => sortFindingsForDashboard(scanState.response?.findings ?? []),
+    [scanState.response],
+  );
   const finding = resolveFindingDetail(findings, findingId);
+  const priority = finding
+    ? finding.priorityBand &&
+      finding.priorityScore !== undefined &&
+      finding.priorityReasons
+      ? {
+          priorityBand: finding.priorityBand,
+          priorityScore: finding.priorityScore,
+          priorityReasons: finding.priorityReasons,
+        }
+      : scoreFindingPriority(finding)
+    : null;
   const backQuery = new URLSearchParams({ source, path });
   if (repoUrl) backQuery.set("repoUrl", repoUrl);
 
@@ -90,6 +154,7 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
     setProposalState({ loading: false, proposal: null, error: null });
     setRemediationState({ loading: false, execution: null, error: null });
     setPullRequestState({ loading: false, result: null, error: null });
+    setDecisionState({ loading: false, error: null, note: "" });
   }, [finding?.id]);
 
   async function generateProposal() {
@@ -100,15 +165,21 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
       const response = await fetch("/api/fix-proposals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ finding })
+        body: JSON.stringify({ finding }),
       });
-      const body = (await response.json()) as { proposal?: FixProposal; error?: string; message?: string };
+      const body = (await response.json()) as {
+        proposal?: FixProposal;
+        error?: string;
+        message?: string;
+      };
 
       if (!response.ok || !body.proposal) {
         setProposalState({
           loading: false,
           proposal: null,
-          error: body.message ?? "AutoCyber could not generate a fix proposal for this finding."
+          error:
+            body.message ??
+            "AutoCyber could not generate a fix proposal for this finding.",
         });
         return;
       }
@@ -116,33 +187,63 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
       const storedStatus = readStoredProposalStatus(body.proposal.id);
       setProposalState({
         loading: false,
-        proposal: storedStatus ? { ...body.proposal, status: storedStatus } : body.proposal,
-        error: null
+        proposal: storedStatus
+          ? { ...body.proposal, status: storedStatus }
+          : body.proposal,
+        error: null,
       });
     } catch {
       setProposalState({
         loading: false,
         proposal: null,
-        error: "AutoCyber could not reach the fix proposal service."
+        error: "AutoCyber could not reach the fix proposal service.",
       });
     }
   }
 
-  function setProposalStatus(status: FixProposalStatus) {
-    setProposalState((current) => {
-      if (!current.proposal) return current;
-      storeProposalStatus(current.proposal.id, status);
+  async function recordProposalDecision(decisionType: FixDecisionType) {
+    if (!proposalState.proposal) return;
+    setDecisionState((current) => ({ ...current, loading: true, error: null }));
+
+    try {
+      const response = await fetch("/api/fix-proposals/decision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          proposal: proposalState.proposal,
+          decisionType,
+          note: decisionState.note,
+        }),
+      });
+      const body = (await response.json()) as {
+        proposal?: FixProposal;
+        message?: string;
+      };
+      if (!response.ok || !body.proposal) {
+        setDecisionState((current) => ({
+          ...current,
+          loading: false,
+          error:
+            body.message ?? "AutoCyber could not record this fix decision.",
+        }));
+        return;
+      }
+
+      storeProposalStatus(body.proposal.id, body.proposal.status);
+      setProposalState((current) => ({
+        ...current,
+        proposal: body.proposal ?? current.proposal,
+      }));
       setRemediationState({ loading: false, execution: null, error: null });
       setPullRequestState({ loading: false, result: null, error: null });
-      return {
+      setDecisionState({ loading: false, error: null, note: "" });
+    } catch {
+      setDecisionState((current) => ({
         ...current,
-        proposal: {
-          ...current.proposal,
-          status,
-          updatedAt: new Date().toISOString()
-        }
-      };
-    });
+        loading: false,
+        error: "AutoCyber could not reach the fix decision memory service.",
+      }));
+    }
   }
 
   async function runLocalVerification() {
@@ -158,22 +259,30 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
           repositoryPath: path,
           originalFinding: {
             ruleId: finding.ruleId,
-            affectedFile: finding.affectedFile
-          }
-        })
+            affectedFile: finding.affectedFile,
+          },
+        }),
       });
-      const body = (await response.json()) as { execution?: LocalRemediationExecution; error?: string; message?: string };
+      const body = (await response.json()) as {
+        execution?: LocalRemediationExecution;
+        error?: string;
+        message?: string;
+      };
       setRemediationState({
         loading: false,
         execution: body.execution ?? null,
-        error: response.ok ? null : body.execution?.error ?? body.message ?? "Local remediation failed."
+        error: response.ok
+          ? null
+          : (body.execution?.error ??
+            body.message ??
+            "Local remediation failed."),
       });
       setPullRequestState({ loading: false, result: null, error: null });
     } catch {
       setRemediationState({
         loading: false,
         execution: null,
-        error: "AutoCyber could not reach the local remediation service."
+        error: "AutoCyber could not reach the local remediation service.",
       });
     }
   }
@@ -189,20 +298,82 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
         body: JSON.stringify({
           proposal: proposalState.proposal,
           execution: remediationState.execution,
-          target: githubTarget
-        })
+          target: githubTarget,
+        }),
       });
-      const body = (await response.json()) as { pullRequest?: GitHubPrRemediationResult; error?: string; message?: string };
+      const body = (await response.json()) as {
+        pullRequest?: GitHubPrRemediationResult;
+        error?: string;
+        message?: string;
+      };
       setPullRequestState({
         loading: false,
         result: body.pullRequest ?? null,
-        error: response.ok ? null : body.pullRequest?.error ?? body.message ?? "GitHub PR creation failed."
+        error: response.ok
+          ? null
+          : (body.pullRequest?.error ??
+            body.message ??
+            "GitHub PR creation failed."),
       });
     } catch {
       setPullRequestState({
         loading: false,
         result: null,
-        error: "AutoCyber could not reach the GitHub PR service."
+        error: "AutoCyber could not reach the GitHub PR service.",
+      });
+    }
+  }
+
+  async function markFalsePositive() {
+    if (!finding) return;
+    setFalsePositiveState({ loading: true, error: null });
+
+    try {
+      const response = await fetch("/api/findings/false-positive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ findingId: finding.id }),
+      });
+      const body = (await response.json()) as {
+        finding?: typeof finding;
+        message?: string;
+      };
+      if (!response.ok || !body.finding) {
+        setFalsePositiveState({
+          loading: false,
+          error:
+            body.message ??
+            "AutoCyber could not mark this finding false positive.",
+        });
+        return;
+      }
+      setScanState((current) => {
+        if (!current.response) return current;
+        return {
+          ...current,
+          response: {
+            ...current.response,
+            findings: current.response.findings.map((candidate) =>
+              candidate.id === body.finding?.id ? body.finding : candidate,
+            ),
+            result: current.response.result
+              ? {
+                  ...current.response.result,
+                  findings: current.response.result.findings.map((candidate) =>
+                    candidate.id === body.finding?.id
+                      ? body.finding
+                      : candidate,
+                  ),
+                }
+              : current.response.result,
+          },
+        };
+      });
+      setFalsePositiveState({ loading: false, error: null });
+    } catch {
+      setFalsePositiveState({
+        loading: false,
+        error: "AutoCyber could not reach the false-positive memory service.",
       });
     }
   }
@@ -210,7 +381,10 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
   return (
     <div className="space-y-6">
       <PageHeader
-        title={finding?.title ?? (scanState.loading ? "Loading finding" : "Finding unavailable")}
+        title={
+          finding?.title ??
+          (scanState.loading ? "Loading finding" : "Finding unavailable")
+        }
         description={
           finding
             ? "A scanner-backed finding detail with affected file, evidence, confidence, and remediation guidance."
@@ -218,7 +392,10 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
         }
       />
 
-      <Link href={`/findings?${backQuery.toString()}`} className="text-sm font-semibold text-slate-700">
+      <Link
+        href={`/findings?${backQuery.toString()}`}
+        className="text-sm font-semibold text-slate-700"
+      >
         Back to findings
       </Link>
 
@@ -226,7 +403,9 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
 
       {scanState.error ? (
         <section className="rounded-lg border border-red-200 bg-red-50 p-6">
-          <h2 className="font-semibold text-red-900">{scanState.error.error}</h2>
+          <h2 className="font-semibold text-red-900">
+            {scanState.error.error}
+          </h2>
           <p className="mt-2 text-sm text-red-700">{scanState.error.message}</p>
         </section>
       ) : null}
@@ -235,7 +414,8 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
         <section className="rounded-lg border border-dashed border-border bg-white p-8 text-center">
           <h2 className="font-semibold text-slate-950">Finding not found</h2>
           <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-            The scanner returned results, but none matched this finding id for the current repository path.
+            The scanner returned results, but none matched this finding id for
+            the current repository path.
           </p>
         </section>
       ) : null}
@@ -246,25 +426,110 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
             <div className="rounded-lg border border-border bg-white p-6 shadow-surface">
               <div className="flex flex-wrap gap-2">
                 <SeverityBadge severity={finding.severity} />
+                {priority ? (
+                  <PriorityBadge priorityBand={priority.priorityBand} />
+                ) : null}
                 <StatusBadge status={finding.status} />
+                {finding.lifecycleStatus ? (
+                  <StatusBadge status={finding.lifecycleStatus} />
+                ) : null}
+                {finding.memoryStatus === "false_positive_suppressed" ? (
+                  <StatusBadge status={finding.memoryStatus} />
+                ) : null}
                 <Badge>{formatFilterLabel(finding.category)}</Badge>
                 {finding.stackTags.map((tag) => (
-                  <Badge key={tag} tone="blue">{tag}</Badge>
+                  <Badge key={tag} tone="blue">
+                    {tag}
+                  </Badge>
                 ))}
               </div>
               <dl className="mt-6 grid gap-4 sm:grid-cols-3">
-                <Metric label="Confidence" value={formatPercent(finding.confidence)} />
-                <Metric label="Autofix" value={finding.autofixAvailable ? "Available" : "Manual"} />
+                <Metric
+                  label="Confidence"
+                  value={formatPercent(finding.confidence)}
+                />
+                <Metric
+                  label="Autofix"
+                  value={finding.autofixAvailable ? "Available" : "Manual"}
+                />
                 <Metric label="Rule" value={finding.ruleId} />
+                {priority ? (
+                  <Metric
+                    label="Priority"
+                    value={`${priority.priorityScore} / ${formatPriorityBand(priority.priorityBand)}`}
+                  />
+                ) : null}
+                <Metric
+                  label="First seen"
+                  value={formatOptionalDateTime(finding.firstSeenAt)}
+                />
+                <Metric
+                  label="Last seen"
+                  value={formatOptionalDateTime(finding.lastSeenAt)}
+                />
+                <Metric
+                  label="Occurrences"
+                  value={String(finding.occurrenceCount ?? 1)}
+                />
+                <Metric label="Scan" value={finding.scanJobId} />
+                <Metric
+                  label="Memory"
+                  value={
+                    finding.memoryStatus === "false_positive_suppressed"
+                      ? "False positive"
+                      : "None"
+                  }
+                />
               </dl>
+              {priority ? (
+                <div className="mt-5 rounded-md border border-border bg-slate-50 p-4">
+                  <h3 className="text-sm font-semibold text-slate-950">
+                    Priority reasons
+                  </h3>
+                  <ul className="mt-2 space-y-1 text-sm leading-6 text-slate-600">
+                    {priority.priorityReasons.slice(0, 4).map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              <div className="mt-5 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={markFalsePositive}
+                  disabled={
+                    falsePositiveState.loading ||
+                    finding.status === "false_positive"
+                  }
+                  className="rounded-md border border-border bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  {falsePositiveState.loading
+                    ? "Marking..."
+                    : finding.status === "false_positive"
+                      ? "False positive saved"
+                      : "Mark false positive"}
+                </button>
+                {falsePositiveState.error ? (
+                  <p className="text-sm font-medium text-red-700">
+                    {falsePositiveState.error}
+                  </p>
+                ) : null}
+              </div>
             </div>
 
             <StartupStackContext finding={finding} />
 
             <DetailSection title="What is wrong">
               <p>
-                AutoCyber detected <span className="font-medium text-slate-800">{formatFilterLabel(finding.category)}</span> in{" "}
-                <span className="font-mono text-slate-800">{finding.affectedFile}</span>.
+                AutoCyber detected{" "}
+                <span className="font-medium text-slate-800">
+                  {formatFilterLabel(finding.category)}
+                </span>{" "}
+                in{" "}
+                <span className="font-mono text-slate-800">
+                  {finding.affectedFile}
+                </span>
+                .
               </p>
             </DetailSection>
 
@@ -275,11 +540,17 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
             <DetailSection title="Evidence">
               <div className="space-y-4">
                 {finding.evidence.map((evidence) => (
-                  <div key={`${evidence.filePath}-${evidence.startLine}-${evidence.snippet}`} className="overflow-hidden rounded-md border border-border">
+                  <div
+                    key={`${evidence.filePath}-${evidence.startLine}-${evidence.snippet}`}
+                    className="overflow-hidden rounded-md border border-border"
+                  >
                     <div className="bg-slate-50 px-4 py-2 font-mono text-xs font-medium text-slate-700">
-                      {evidence.filePath}:{evidence.startLine}-{evidence.endLine}
+                      {evidence.filePath}:{evidence.startLine}-
+                      {evidence.endLine}
                     </div>
-                    <pre className="overflow-x-auto bg-slate-950 p-4 text-sm leading-6 text-slate-100">{evidence.snippet}</pre>
+                    <pre className="overflow-x-auto bg-slate-950 p-4 text-sm leading-6 text-slate-100">
+                      {evidence.snippet}
+                    </pre>
                   </div>
                 ))}
               </div>
@@ -300,11 +571,16 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
                 <div>
                   <h2 className="font-semibold text-slate-950">Fix proposal</h2>
                   <p className="mt-2 text-sm leading-6 text-slate-600">
-                    Generate a human-reviewable remediation plan. In Stage 4A, AutoCyber only applies approved patches to a temporary local working copy and does not modify the original repo or open a PR.
+                    Generate a human-reviewable remediation plan. In Stage 4A,
+                    AutoCyber only applies approved patches to a temporary local
+                    working copy and does not modify the original repo or open a
+                    PR.
                   </p>
                 </div>
                 <Badge tone={finding.autofixAvailable ? "green" : "gray"}>
-                  {finding.autofixAvailable ? "Template available" : "Manual template"}
+                  {finding.autofixAvailable
+                    ? "Template available"
+                    : "Manual template"}
                 </Badge>
               </div>
 
@@ -314,10 +590,18 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
                 disabled={proposalState.loading}
                 className="mt-4 rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
               >
-                {proposalState.loading ? "Generating..." : proposalState.proposal ? "Regenerate proposal" : "Generate fix proposal"}
+                {proposalState.loading
+                  ? "Generating..."
+                  : proposalState.proposal
+                    ? "Regenerate proposal"
+                    : "Generate fix proposal"}
               </button>
 
-              {proposalState.error ? <p className="mt-3 text-sm font-medium text-red-700">{proposalState.error}</p> : null}
+              {proposalState.error ? (
+                <p className="mt-3 text-sm font-medium text-red-700">
+                  {proposalState.error}
+                </p>
+              ) : null}
             </section>
           </aside>
         </div>
@@ -334,7 +618,7 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
             category: finding.category,
             stackTags: finding.stackTags,
             remediationSummary: finding.remediationSummary,
-            verificationStrategy: finding.verificationStrategy
+            verificationStrategy: finding.verificationStrategy,
           }}
           remediationState={remediationState}
           pullRequestState={pullRequestState}
@@ -342,8 +626,14 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
           onGitHubTargetChange={setGithubTarget}
           onRunLocalVerification={runLocalVerification}
           onCreateGitHubPullRequest={createGitHubPullRequest}
-          onStatusChange={setProposalStatus}
-          canRunLocalVerification={source === "local" && proposalState.proposal.status === "approved"}
+          decisionState={decisionState}
+          onDecisionNoteChange={(note) =>
+            setDecisionState((current) => ({ ...current, note }))
+          }
+          onDecisionChange={recordProposalDecision}
+          canRunLocalVerification={
+            source === "local" && proposalState.proposal.status === "approved"
+          }
           canCreateGitHubPullRequest={
             proposalState.proposal.status === "approved" &&
             remediationState.execution?.status === "verified" &&
@@ -355,7 +645,13 @@ export function FindingDetailClient({ defaultPath, findingId, initialParams }: F
   );
 }
 
-function DetailSection({ title, children }: { title: string; children: ReactNode }) {
+function DetailSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
   return (
     <section className="rounded-lg border border-border bg-white p-6 shadow-surface">
       <h2 className="font-semibold text-slate-950">{title}</h2>
@@ -368,9 +664,22 @@ function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-border bg-slate-50 p-4">
       <dt className="text-xs font-medium uppercase text-slate-500">{label}</dt>
-      <dd className="mt-1 break-words text-sm font-semibold text-slate-950">{value}</dd>
+      <dd className="mt-1 break-words text-sm font-semibold text-slate-950">
+        {value}
+      </dd>
     </div>
   );
+}
+
+function formatOptionalDateTime(value: string | undefined): string {
+  if (!value) return "This scan";
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function LoadingState() {
@@ -390,21 +699,31 @@ function StartupStackContext({ finding }: { finding: ProposalFindingContext }) {
     <section className="rounded-lg border border-border bg-white p-6 shadow-surface">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="font-semibold text-slate-950">Startup stack context</h2>
+          <h2 className="font-semibold text-slate-950">
+            Startup stack context
+          </h2>
           <p className="mt-2 text-sm leading-6 text-slate-600">
-            AutoCyber is interpreting this finding against the provider and framework boundaries that are present in the scanned repo.
+            AutoCyber is interpreting this finding against the provider and
+            framework boundaries that are present in the scanned repo.
           </p>
         </div>
         <Badge tone="blue">Stage 5</Badge>
       </div>
       <div className="mt-5 grid gap-3 md:grid-cols-2">
         {contexts.map((context) => (
-          <div key={context.stack} className="rounded-md border border-border bg-slate-50 p-4">
+          <div
+            key={context.stack}
+            className="rounded-md border border-border bg-slate-50 p-4"
+          >
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone="blue">{context.stack}</Badge>
-              <h3 className="text-sm font-semibold text-slate-950">{context.label}</h3>
+              <h3 className="text-sm font-semibold text-slate-950">
+                {context.label}
+              </h3>
             </div>
-            <p className="mt-2 text-sm leading-6 text-slate-600">{context.description}</p>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              {context.description}
+            </p>
           </div>
         ))}
       </div>
@@ -423,21 +742,46 @@ function FixProposalReview({
   onRunLocalVerification,
   onCreateGitHubPullRequest,
   onGitHubTargetChange,
-  onStatusChange
+  decisionState,
+  onDecisionNoteChange,
+  onDecisionChange,
 }: {
   proposal: FixProposal;
-  findingSummary: ProposalFindingContext & { title: string; whyItMatters: string };
-  remediationState: { loading: boolean; execution: LocalRemediationExecution | null; error: string | null };
-  pullRequestState: { loading: boolean; result: GitHubPrRemediationResult | null; error: string | null };
+  findingSummary: ProposalFindingContext & {
+    title: string;
+    whyItMatters: string;
+  };
+  remediationState: {
+    loading: boolean;
+    execution: LocalRemediationExecution | null;
+    error: string | null;
+  };
+  pullRequestState: {
+    loading: boolean;
+    result: GitHubPrRemediationResult | null;
+    error: string | null;
+  };
+  decisionState: { loading: boolean; error: string | null; note: string };
   githubTarget: GitHubRepositoryTarget;
   canRunLocalVerification: boolean;
   canCreateGitHubPullRequest: boolean;
   onRunLocalVerification(): void;
   onCreateGitHubPullRequest(): void;
   onGitHubTargetChange(target: GitHubRepositoryTarget): void;
-  onStatusChange(status: FixProposalStatus): void;
+  onDecisionNoteChange(note: string): void;
+  onDecisionChange(decisionType: FixDecisionType): void;
 }) {
   const display = getFixProposalDisplay(proposal, findingSummary);
+  const proposalPriority =
+    proposal.priorityBand &&
+    proposal.priorityScore !== undefined &&
+    proposal.priorityReasons
+      ? {
+          priorityBand: proposal.priorityBand,
+          priorityScore: proposal.priorityScore,
+          priorityReasons: proposal.priorityReasons,
+        }
+      : null;
   const isAdvisory = display.kind === "advisory";
   const canApplyPatch = canRunLocalVerification && !isAdvisory;
   const canOpenPr = canCreateGitHubPullRequest && !isAdvisory;
@@ -448,39 +792,131 @@ function FixProposalReview({
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={proposal.status} />
+            {proposalPriority ? (
+              <PriorityBadge priorityBand={proposalPriority.priorityBand} />
+            ) : null}
             <Badge tone="blue">Human review required</Badge>
             <Badge tone={display.tone}>{display.label}</Badge>
           </div>
-          <h2 className="mt-3 text-xl font-semibold text-slate-950">{proposal.title}</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">{proposal.explanation}</p>
+          <h2 className="mt-3 text-xl font-semibold text-slate-950">
+            {proposal.title}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            {proposal.explanation}
+          </p>
         </div>
         <div className="flex shrink-0 gap-2">
-          <button type="button" onClick={() => onStatusChange("approved")} className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white">
+          <button
+            type="button"
+            onClick={() => onDecisionChange("fix_accepted")}
+            disabled={decisionState.loading}
+            className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
+          >
             Approve
           </button>
-          <button type="button" onClick={() => onStatusChange("rejected")} className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700">
+          <button
+            type="button"
+            onClick={() => onDecisionChange("fix_rejected")}
+            disabled={decisionState.loading}
+            className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+          >
             Reject
           </button>
         </div>
       </div>
 
-      <div className={`mt-6 rounded-md border p-4 ${isAdvisory ? "border-orange-200 bg-orange-50" : "border-emerald-200 bg-emerald-50"}`}>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge tone={display.tone}>{display.kind === "advisory" ? "Manual remediation required" : "Patch ready for review"}</Badge>
-          <span className={`text-sm font-semibold ${isAdvisory ? "text-orange-900" : "text-emerald-900"}`}>{display.summary}</span>
+      <DecisionMemoryCard proposal={proposal} />
+
+      {proposalPriority ? (
+        <div className="mt-5 rounded-md border border-border bg-slate-50 p-4">
+          <h3 className="text-sm font-semibold text-slate-950">
+            Proposal priority
+          </h3>
+          <p className="mt-2 text-sm text-slate-600">
+            {proposalPriority.priorityScore} /{" "}
+            {formatPriorityBand(proposalPriority.priorityBand)}
+          </p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            {proposalPriority.priorityReasons.slice(0, 3).join("; ")}
+          </p>
         </div>
-        {display.whyAutoCyberCannotPatch ? <p className="mt-3 text-sm leading-6 text-orange-800">{display.whyAutoCyberCannotPatch}</p> : null}
+      ) : null}
+
+      <div className="mt-5 rounded-md border border-border bg-slate-50 p-4">
+        <label
+          className="text-sm font-semibold text-slate-950"
+          htmlFor="fix-decision-note"
+        >
+          Decision note
+        </label>
+        <textarea
+          id="fix-decision-note"
+          value={decisionState.note}
+          onChange={(event) => onDecisionNoteChange(event.target.value)}
+          rows={3}
+          className="mt-2 w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-slate-900"
+          placeholder="Optional rationale for future proposal memory"
+        />
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => onDecisionChange("advisory_acknowledged")}
+            disabled={decisionState.loading}
+            className="rounded-md border border-border bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+          >
+            Acknowledge advisory
+          </button>
+          <button
+            type="button"
+            onClick={() => onDecisionChange("manual_fix_preferred")}
+            disabled={decisionState.loading}
+            className="rounded-md border border-border bg-white px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+          >
+            Prefer manual fix
+          </button>
+        </div>
+        {decisionState.error ? (
+          <p className="mt-3 text-sm font-medium text-red-700">
+            {decisionState.error}
+          </p>
+        ) : null}
+      </div>
+
+      <div
+        className={`mt-6 rounded-md border p-4 ${isAdvisory ? "border-orange-200 bg-orange-50" : "border-emerald-200 bg-emerald-50"}`}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={display.tone}>
+            {display.kind === "advisory"
+              ? "Manual remediation required"
+              : "Patch ready for review"}
+          </Badge>
+          <span
+            className={`text-sm font-semibold ${isAdvisory ? "text-orange-900" : "text-emerald-900"}`}
+          >
+            {display.summary}
+          </span>
+        </div>
+        {display.whyAutoCyberCannotPatch ? (
+          <p className="mt-3 text-sm leading-6 text-orange-800">
+            {display.whyAutoCyberCannotPatch}
+          </p>
+        ) : null}
       </div>
 
       <div className="mt-6 grid gap-4 xl:grid-cols-2">
         <ReviewBlock title="Original finding summary">
           <p className="font-medium text-slate-800">{findingSummary.title}</p>
-          <p className="mt-2 font-mono text-xs text-slate-600">{findingSummary.affectedFile}</p>
+          <p className="mt-2 font-mono text-xs text-slate-600">
+            {findingSummary.affectedFile}
+          </p>
           <p className="mt-3">{findingSummary.whyItMatters}</p>
         </ReviewBlock>
         <ReviewBlock title="Proposed change">
           <p>{proposal.proposedPatch}</p>
-          <p className="mt-3 text-xs font-medium uppercase text-slate-500">Files changed</p>
+          <p className="mt-3 text-xs font-medium uppercase text-slate-500">
+            Files changed
+          </p>
           <ul className="mt-2 space-y-1 font-mono text-xs text-slate-700">
             {proposal.filesChanged.map((file) => (
               <li key={file}>{file}</li>
@@ -492,7 +928,10 @@ function FixProposalReview({
             <ol className="space-y-2">
               {display.manualSteps.map((step, index) => (
                 <li key={step}>
-                  <span className="font-semibold text-slate-900">{index + 1}.</span> {step}
+                  <span className="font-semibold text-slate-900">
+                    {index + 1}.
+                  </span>{" "}
+                  {step}
                 </li>
               ))}
             </ol>
@@ -505,7 +944,10 @@ function FixProposalReview({
           <ol className="space-y-2">
             {proposal.verificationPlan.map((step, index) => (
               <li key={step}>
-                <span className="font-semibold text-slate-900">{index + 1}.</span> {step}
+                <span className="font-semibold text-slate-900">
+                  {index + 1}.
+                </span>{" "}
+                {step}
               </li>
             ))}
           </ol>
@@ -513,9 +955,15 @@ function FixProposalReview({
       </div>
 
       <div className="mt-6">
-        <h3 className="text-sm font-semibold text-slate-950">{display.diffTitle}</h3>
-        <p className="mt-2 text-sm leading-6 text-slate-600">{display.diffDescription}</p>
-        <pre className={`mt-3 overflow-x-auto rounded-md p-4 text-sm leading-6 ${isAdvisory ? "border border-orange-200 bg-orange-50 text-orange-900" : "bg-slate-950 text-slate-100"}`}>
+        <h3 className="text-sm font-semibold text-slate-950">
+          {display.diffTitle}
+        </h3>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          {display.diffDescription}
+        </p>
+        <pre
+          className={`mt-3 overflow-x-auto rounded-md p-4 text-sm leading-6 ${isAdvisory ? "border border-orange-200 bg-orange-50 text-orange-900" : "bg-slate-950 text-slate-100"}`}
+        >
           {proposal.diff}
         </pre>
       </div>
@@ -523,7 +971,9 @@ function FixProposalReview({
       <div className="mt-6 rounded-md border border-border bg-slate-50 p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-slate-950">Local verified remediation</h3>
+            <h3 className="text-sm font-semibold text-slate-950">
+              Local verified remediation
+            </h3>
             <p className="mt-2 text-sm leading-6 text-slate-600">
               {isAdvisory
                 ? display.actionDisabledReason
@@ -536,27 +986,53 @@ function FixProposalReview({
             disabled={!canApplyPatch || remediationState.loading}
             className="rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
           >
-            {remediationState.loading ? "Verifying..." : "Run local remediation"}
+            {remediationState.loading
+              ? "Verifying..."
+              : "Run local remediation"}
           </button>
         </div>
-        {isAdvisory ? <p className="mt-3 text-sm font-medium text-orange-800">Manual remediation is required before verification or PR creation can run.</p> : null}
-        {!canRunLocalVerification && !isAdvisory ? <p className="mt-3 text-sm text-slate-600">Approve the proposal first to enable local remediation.</p> : null}
-        {remediationState.error ? <p className="mt-3 text-sm font-medium text-red-700">{remediationState.error}</p> : null}
-        {remediationState.execution ? <RemediationResult execution={remediationState.execution} /> : null}
+        {isAdvisory ? (
+          <p className="mt-3 text-sm font-medium text-orange-800">
+            Manual remediation is required before verification or PR creation
+            can run.
+          </p>
+        ) : null}
+        {!canRunLocalVerification && !isAdvisory ? (
+          <p className="mt-3 text-sm text-slate-600">
+            Approve the proposal first to enable local remediation.
+          </p>
+        ) : null}
+        {remediationState.error ? (
+          <p className="mt-3 text-sm font-medium text-red-700">
+            {remediationState.error}
+          </p>
+        ) : null}
+        {remediationState.execution ? (
+          <RemediationResult execution={remediationState.execution} />
+        ) : null}
       </div>
 
       <div className="mt-6 rounded-md border border-border bg-slate-50 p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-slate-950">GitHub pull request</h3>
+            <h3 className="text-sm font-semibold text-slate-950">
+              GitHub pull request
+            </h3>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              Stage 4B creates a remediation branch from the default branch, commits only the verified changed files, and opens a PR after local verification passes.
+              Stage 4B creates a remediation branch from the default branch,
+              commits only the verified changed files, and opens a PR after
+              local verification passes.
             </p>
           </div>
           <button
             type="button"
             onClick={onCreateGitHubPullRequest}
-            disabled={!canOpenPr || pullRequestState.loading || !githubTarget.owner || !githubTarget.repo}
+            disabled={
+              !canOpenPr ||
+              pullRequestState.loading ||
+              !githubTarget.owner ||
+              !githubTarget.repo
+            }
             className="rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
           >
             {pullRequestState.loading ? "Creating PR..." : "Create GitHub PR"}
@@ -566,37 +1042,71 @@ function FixProposalReview({
           <LabeledInput
             label="Owner"
             value={githubTarget.owner}
-            onChange={(owner) => onGitHubTargetChange({ ...githubTarget, owner, repoUrl: buildRepoUrl(owner, githubTarget.repo) })}
+            onChange={(owner) =>
+              onGitHubTargetChange({
+                ...githubTarget,
+                owner,
+                repoUrl: buildRepoUrl(owner, githubTarget.repo),
+              })
+            }
           />
           <LabeledInput
             label="Repository"
             value={githubTarget.repo}
-            onChange={(repo) => onGitHubTargetChange({ ...githubTarget, repo, repoUrl: buildRepoUrl(githubTarget.owner, repo) })}
+            onChange={(repo) =>
+              onGitHubTargetChange({
+                ...githubTarget,
+                repo,
+                repoUrl: buildRepoUrl(githubTarget.owner, repo),
+              })
+            }
           />
           <LabeledInput
             label="Default branch"
             value={githubTarget.defaultBranch}
-            onChange={(defaultBranch) => onGitHubTargetChange({ ...githubTarget, defaultBranch })}
+            onChange={(defaultBranch) =>
+              onGitHubTargetChange({ ...githubTarget, defaultBranch })
+            }
           />
         </div>
         <p className="mt-3 text-sm text-slate-600">
-          Requires a connected repository with PR remediation enabled, or server-side `GITHUB_TOKEN` token-dev mode with least-privilege contents and pull request permissions.
-          AutoCyber never sends credentials to the browser.
+          Requires a connected repository with PR remediation enabled, or
+          server-side `GITHUB_TOKEN` token-dev mode with least-privilege
+          contents and pull request permissions. AutoCyber never sends
+          credentials to the browser.
         </p>
         {isAdvisory ? (
-          <p className="mt-3 text-sm font-medium text-orange-800">Advisory proposals cannot create GitHub PRs until a human supplies an applyable patch and local verification passes.</p>
+          <p className="mt-3 text-sm font-medium text-orange-800">
+            Advisory proposals cannot create GitHub PRs until a human supplies
+            an applyable patch and local verification passes.
+          </p>
         ) : null}
         {!canCreateGitHubPullRequest && !isAdvisory ? (
-          <p className="mt-3 text-sm text-slate-600">Approve the proposal and complete passing local verification before creating a GitHub PR.</p>
+          <p className="mt-3 text-sm text-slate-600">
+            Approve the proposal and complete passing local verification before
+            creating a GitHub PR.
+          </p>
         ) : null}
-        {pullRequestState.error ? <p className="mt-3 text-sm font-medium text-red-700">{pullRequestState.error}</p> : null}
-        {pullRequestState.result ? <GitHubPullRequestResult result={pullRequestState.result} /> : null}
+        {pullRequestState.error ? (
+          <p className="mt-3 text-sm font-medium text-red-700">
+            {pullRequestState.error}
+          </p>
+        ) : null}
+        {pullRequestState.result ? (
+          <GitHubPullRequestResult result={pullRequestState.result} />
+        ) : null}
       </div>
     </section>
   );
 }
 
-function ReviewBlock({ title, children }: { title: string; children: ReactNode }) {
+function ReviewBlock({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
   return (
     <div className="rounded-md border border-border bg-slate-50 p-4">
       <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
@@ -605,25 +1115,110 @@ function ReviewBlock({ title, children }: { title: string; children: ReactNode }
   );
 }
 
-function RemediationResult({ execution }: { execution: LocalRemediationExecution }) {
+function DecisionMemoryCard({ proposal }: { proposal: FixProposal }) {
+  const memory = proposal.decisionMemory;
+  if (
+    !memory ||
+    (!memory.previouslyAccepted &&
+      !memory.previouslyRejected &&
+      !memory.manualFixPreferred &&
+      !memory.falsePositiveMemory &&
+      !memory.samePatchPreviouslyRejected &&
+      !memory.latestDecisionType)
+  ) {
+    return null;
+  }
+
+  const labels = [
+    memory.previouslyAccepted ? "Previously accepted" : null,
+    memory.previouslyRejected ? "Previously rejected" : null,
+    memory.manualFixPreferred ? "Manual fix preferred" : null,
+    memory.falsePositiveMemory ? "False positive memory" : null,
+    memory.samePatchPreviouslyRejected ? "Same patch rejected" : null,
+  ].filter((label): label is string => Boolean(label));
+
+  return (
+    <div className="mt-5 rounded-md border border-blue-200 bg-blue-50 p-4">
+      <div className="flex flex-wrap gap-2">
+        {labels.map((label) => (
+          <Badge key={label} tone="blue">
+            {label}
+          </Badge>
+        ))}
+      </div>
+      <dl className="mt-3 grid gap-3 sm:grid-cols-2">
+        <Metric
+          label="Last decision"
+          value={
+            memory.latestDecisionAt
+              ? formatOptionalDateTime(memory.latestDecisionAt)
+              : "No timestamp"
+          }
+        />
+        <Metric
+          label="Decision type"
+          value={memory.latestDecisionType ?? "None"}
+        />
+      </dl>
+      {memory.latestRationale ? (
+        <p className="mt-3 text-sm leading-6 text-blue-900">
+          {memory.latestRationale}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function RemediationResult({
+  execution,
+}: {
+  execution: LocalRemediationExecution;
+}) {
   return (
     <div className="mt-4 space-y-4 rounded-md border border-border bg-white p-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={execution.status === "verified" ? "green" : execution.status === "failed" ? "red" : "yellow"}>{execution.status}</Badge>
+        <Badge
+          tone={
+            execution.status === "verified"
+              ? "green"
+              : execution.status === "failed"
+                ? "red"
+                : "yellow"
+          }
+        >
+          {execution.status}
+        </Badge>
         <Badge tone="gray">No GitHub PR created</Badge>
       </div>
       <dl className="grid gap-3 md:grid-cols-2">
-        <Metric label="Working copy" value={execution.workingCopyPath ?? "Not created"} />
-        <Metric label="Files changed" value={execution.filesChanged.length > 0 ? execution.filesChanged.join(", ") : "None"} />
+        <Metric
+          label="Working copy"
+          value={execution.workingCopyPath ?? "Not created"}
+        />
+        <Metric
+          label="Files changed"
+          value={
+            execution.filesChanged.length > 0
+              ? execution.filesChanged.join(", ")
+              : "None"
+          }
+        />
       </dl>
       {execution.verificationResult ? (
         <div>
-          <h4 className="text-sm font-semibold text-slate-950">Verification result</h4>
-          <p className="mt-2 text-sm text-slate-600">{execution.verificationResult.outputSummary}</p>
+          <h4 className="text-sm font-semibold text-slate-950">
+            Verification result
+          </h4>
+          <p className="mt-2 text-sm text-slate-600">
+            {execution.verificationResult.outputSummary}
+          </p>
           <ul className="mt-3 space-y-2 text-sm text-slate-600">
             {execution.verificationResult.checksRun.map((check) => (
               <li key={`${check.name}-${check.outputSummary}`}>
-                <span className="font-semibold text-slate-900">{check.name}</span>: {check.status} - {check.outputSummary}
+                <span className="font-semibold text-slate-900">
+                  {check.name}
+                </span>
+                : {check.status} - {check.outputSummary}
               </li>
             ))}
           </ul>
@@ -639,38 +1234,78 @@ function RemediationResult({ execution }: { execution: LocalRemediationExecution
           ) : null}
         </div>
       ) : null}
-      {execution.error ? <p className="text-sm font-medium text-red-700">{execution.error}</p> : null}
+      {execution.error ? (
+        <p className="text-sm font-medium text-red-700">{execution.error}</p>
+      ) : null}
     </div>
   );
 }
 
-function GitHubPullRequestResult({ result }: { result: GitHubPrRemediationResult }) {
+function GitHubPullRequestResult({
+  result,
+}: {
+  result: GitHubPrRemediationResult;
+}) {
   return (
     <div className="mt-4 space-y-4 rounded-md border border-border bg-white p-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={result.status === "pr_created" ? "green" : result.status === "failed" ? "red" : "yellow"}>{result.status}</Badge>
+        <Badge
+          tone={
+            result.status === "pr_created"
+              ? "green"
+              : result.status === "failed"
+                ? "red"
+                : "yellow"
+          }
+        >
+          {result.status}
+        </Badge>
         <Badge tone="blue">GitHub</Badge>
       </div>
       <dl className="grid gap-3 md:grid-cols-2">
         <Metric label="Branch" value={result.branchName ?? "Not created"} />
-        <Metric label="Files changed" value={result.filesChanged.length > 0 ? result.filesChanged.join(", ") : "None"} />
+        <Metric
+          label="Files changed"
+          value={
+            result.filesChanged.length > 0
+              ? result.filesChanged.join(", ")
+              : "None"
+          }
+        />
         <Metric label="Verification" value={result.verificationSummary} />
         <Metric label="Provider" value={result.provider} />
       </dl>
       {result.pullRequestUrl ? (
-        <a href={result.pullRequestUrl} className="text-sm font-semibold text-slate-800 underline" target="_blank" rel="noreferrer">
+        <a
+          href={result.pullRequestUrl}
+          className="text-sm font-semibold text-slate-800 underline"
+          target="_blank"
+          rel="noreferrer"
+        >
           Open pull request
         </a>
       ) : null}
-      {result.error ? <p className="text-sm font-medium text-red-700">{result.error}</p> : null}
+      {result.error ? (
+        <p className="text-sm font-medium text-red-700">{result.error}</p>
+      ) : null}
     </div>
   );
 }
 
-function LabeledInput({ label, value, onChange }: { label: string; value: string; onChange(value: string): void }) {
+function LabeledInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange(value: string): void;
+}) {
   return (
     <label className="block">
-      <span className="text-xs font-medium uppercase text-slate-500">{label}</span>
+      <span className="text-xs font-medium uppercase text-slate-500">
+        {label}
+      </span>
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -684,10 +1319,16 @@ function buildRepoUrl(owner: string, repo: string): string {
   return owner && repo ? `https://github.com/${owner}/${repo}` : "";
 }
 
-function readStoredProposalStatus(proposalId: string): FixProposalStatus | null {
+function readStoredProposalStatus(
+  proposalId: string,
+): FixProposalStatus | null {
   if (typeof window === "undefined") return null;
-  const value = window.localStorage.getItem(getProposalStatusStorageKey(proposalId));
-  return value === "approved" || value === "rejected" || value === "draft" ? value : null;
+  const value = window.localStorage.getItem(
+    getProposalStatusStorageKey(proposalId),
+  );
+  return value === "approved" || value === "rejected" || value === "draft"
+    ? value
+    : null;
 }
 
 function storeProposalStatus(proposalId: string, status: FixProposalStatus) {

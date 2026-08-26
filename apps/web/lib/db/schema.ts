@@ -1,8 +1,19 @@
-import { integer, jsonb, pgTable, real, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  integer,
+  jsonb,
+  pgTable,
+  real,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 
 const timestamps = {
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 };
 
 export const users = pgTable("users", {
@@ -10,21 +21,21 @@ export const users = pgTable("users", {
   clerkUserId: text("clerk_user_id").notNull().unique(),
   email: text("email").notNull(),
   name: text("name").notNull(),
-  ...timestamps
+  ...timestamps,
 });
 
 export const teams = pgTable("teams", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   slug: text("slug").notNull().unique(),
-  ...timestamps
+  ...timestamps,
 });
 
 export const teamMemberships = pgTable("team_memberships", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),
   teamId: text("team_id").notNull(),
-  ...timestamps
+  ...timestamps,
 });
 
 export const projects = pgTable("projects", {
@@ -36,7 +47,7 @@ export const projects = pgTable("projects", {
   riskScore: integer("risk_score").notNull().default(0),
   stage: text("stage").notNull(),
   stack: jsonb("stack").$type<string[]>().notNull().default([]),
-  ...timestamps
+  ...timestamps,
 });
 
 export const repositories = pgTable("repositories", {
@@ -53,9 +64,12 @@ export const repositories = pgTable("repositories", {
   canScan: text("can_scan").notNull().default("true"),
   canMonitor: text("can_monitor").notNull().default("false"),
   canOpenPr: text("can_open_pr").notNull().default("false"),
-  permissionsSummary: jsonb("permissions_summary").$type<Record<string, string | boolean | null>>().notNull().default({}),
+  permissionsSummary: jsonb("permissions_summary")
+    .$type<Record<string, string | boolean | null>>()
+    .notNull()
+    .default({}),
   lastScannedAt: timestamp("last_scanned_at", { withTimezone: true }),
-  ...timestamps
+  ...timestamps,
 });
 
 export const githubInstallations = pgTable("github_installations", {
@@ -66,10 +80,15 @@ export const githubInstallations = pgTable("github_installations", {
   accountLogin: text("account_login").notNull(),
   accountType: text("account_type").notNull(),
   status: text("status").notNull().default("connected"),
-  repositorySelection: text("repository_selection").notNull().default("selected"),
+  repositorySelection: text("repository_selection")
+    .notNull()
+    .default("selected"),
   repositoryCount: integer("repository_count").notNull().default(0),
-  permissionsSummary: jsonb("permissions_summary").$type<Record<string, string | boolean | null>>().notNull().default({}),
-  ...timestamps
+  permissionsSummary: jsonb("permissions_summary")
+    .$type<Record<string, string | boolean | null>>()
+    .notNull()
+    .default({}),
+  ...timestamps,
 });
 
 export const scanJobs = pgTable("scan_jobs", {
@@ -84,7 +103,7 @@ export const scanJobs = pgTable("scan_jobs", {
   error: text("error"),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
-  summary: jsonb("summary").$type<Record<string, number>>().notNull()
+  summary: jsonb("summary").$type<Record<string, unknown>>().notNull(),
 });
 
 export const findings = pgTable("findings", {
@@ -97,6 +116,14 @@ export const findings = pgTable("findings", {
   severity: text("severity").notNull(),
   confidence: real("confidence").notNull(),
   status: text("status").notNull(),
+  lifecycleStatus: text("lifecycle_status").notNull().default("new"),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  occurrenceCount: integer("occurrence_count").notNull().default(1),
+  fingerprint: text("fingerprint"),
+  previousFindingId: text("previous_finding_id"),
+  memoryStatus: text("memory_status").notNull().default("none"),
   stackTags: jsonb("stack_tags").$type<string[]>().notNull().default([]),
   affectedFile: text("affected_file").notNull(),
   evidence: jsonb("evidence").$type<unknown[]>().notNull().default([]),
@@ -104,7 +131,7 @@ export const findings = pgTable("findings", {
   remediationSummary: text("remediation_summary").notNull(),
   verificationStrategy: text("verification_strategy").notNull(),
   autofixAvailable: text("autofix_available").notNull(),
-  ...timestamps
+  ...timestamps,
 });
 
 export const fixProposals = pgTable("fix_proposals", {
@@ -118,9 +145,29 @@ export const fixProposals = pgTable("fix_proposals", {
   proposedPatch: text("proposed_patch").notNull(),
   diff: text("diff").notNull(),
   risk: text("risk").notNull(),
-  verificationPlan: jsonb("verification_plan").$type<string[]>().notNull().default([]),
+  verificationPlan: jsonb("verification_plan")
+    .$type<string[]>()
+    .notNull()
+    .default([]),
   filesChanged: jsonb("files_changed").$type<string[]>().notNull().default([]),
-  ...timestamps
+  ...timestamps,
+});
+
+export const fixDecisionMemories = pgTable("fix_decision_memories", {
+  id: text("id").primaryKey(),
+  teamId: text("team_id").notNull(),
+  repositoryId: text("repository_id").notNull(),
+  findingFingerprint: text("finding_fingerprint").notNull(),
+  ruleId: text("rule_id").notNull(),
+  decisionType: text("decision_type").notNull(),
+  proposalId: text("proposal_id"),
+  findingId: text("finding_id"),
+  rationale: text("rationale"),
+  patchHash: text("patch_hash"),
+  recommendedFixHash: text("recommended_fix_hash"),
+  proposalKind: text("proposal_kind"),
+  actorUserId: text("actor_user_id"),
+  ...timestamps,
 });
 
 export const verificationResults = pgTable("verification_results", {
@@ -131,7 +178,7 @@ export const verificationResults = pgTable("verification_results", {
   testCommand: text("test_command").notNull(),
   testOutputSummary: text("test_output_summary").notNull(),
   evidence: jsonb("evidence").$type<string[]>().notNull().default([]),
-  ...timestamps
+  ...timestamps,
 });
 
 export const pullRequests = pgTable("pull_requests", {
@@ -143,7 +190,7 @@ export const pullRequests = pgTable("pull_requests", {
   title: text("title").notNull(),
   summary: text("summary").notNull(),
   url: text("url"),
-  ...timestamps
+  ...timestamps,
 });
 
 export const auditLogs = pgTable("audit_logs", {
@@ -153,7 +200,9 @@ export const auditLogs = pgTable("audit_logs", {
   action: text("action").notNull(),
   targetType: text("target_type").notNull(),
   targetId: text("target_id").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const securityMemories = pgTable("security_memories", {
@@ -165,7 +214,7 @@ export const securityMemories = pgTable("security_memories", {
   content: text("content").notNull(),
   source: text("source").notNull(),
   confidence: text("confidence").notNull(),
-  ...timestamps
+  ...timestamps,
 });
 
 export const notifications = pgTable("notifications", {
@@ -179,5 +228,5 @@ export const notifications = pgTable("notifications", {
   title: text("title").notNull(),
   message: text("message").notNull(),
   status: text("status").notNull(),
-  ...timestamps
+  ...timestamps,
 });

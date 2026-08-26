@@ -12,7 +12,15 @@ AutoCyber is not a generic scanner dashboard. The goal is to become a practical 
 
 ## Current Progress
 
-AutoCyber is an early full-stack prototype with the core remediation loop working in local and development flows, plus Stage 6 continuous-monitoring pieces in progress.
+**Current product stage: Stage 7 Security Memory is complete and QA-passed.**
+
+AutoCyber is an early full-stack prototype with the complete development loop working:
+
+```txt
+Detect -> Explain -> Fix -> Verify -> PR -> Remember -> Monitor
+```
+
+The next product stage is Stage 8 Opinionated Workflows. Stage 7.5A production Dockerization is implemented and verified; GitHub Actions and AWS infrastructure are the next platform milestones.
 
 Implemented:
 
@@ -33,6 +41,11 @@ Implemented:
 - Queued scan job model for monitoring scans
 - Retry flow for failed scans
 - Monitoring history and notification UI
+- Repository-scoped finding fingerprints and lifecycle states: new, existing, resolved, reappeared, and false-positive-suppressed
+- Durable security memory for accepted fixes, rejected fixes, manual-fix preferences, false positives, and verified remediations
+- Memory-aware priority scoring and notification de-duplication
+- Copyable, redacted security evidence packs
+- Production Next.js standalone Docker image with non-root execution, health checks, Git-based repository ingestion, and temporary-clone cleanup
 - Drizzle schema and migrations for the current product data model
 
 Prototype or planned:
@@ -40,6 +53,8 @@ Prototype or planned:
 - Production GitHub App installation UX
 - Production background worker for queued scans
 - Production-grade private repository fetching and PR creation through GitHub App tokens
+- Full security-memory management UI and richer repository profiles
+- CI/CD workflows and AWS infrastructure
 - Team onboarding, billing, usage limits, and production auth policy
 - Full setup flows for Vercel, Supabase, Clerk, Stripe, Firebase, Railway, Render, OpenAI, and Anthropic
 - Autonomous remediation beyond human-approved flows
@@ -52,7 +67,12 @@ Stage status:
 - Stage 3 Fix Proposal Engine: implemented for rule-based proposals
 - Stage 4 Verified PR Remediation: implemented as a guarded local/token-mode prototype
 - Stage 5 Startup-Stack Integrations: scanner checks implemented for key startup-stack risks
-- Stage 6 Continuous Monitoring: in progress with GitHub App metadata, signed webhooks, queued scan jobs, retries, history, and notifications
+- Stage 6 Continuous Monitoring: complete for the development prototype with GitHub App metadata, signed webhooks, queued scan jobs, retries, history, and notifications
+- Stage 7 Security Memory: complete and QA-passed with finding lifecycle, decision memory, priority scoring, suppression, and evidence packs
+- Stage 7.5A Production Dockerization: complete and container-verified
+- Stage 8 Opinionated Workflows: next
+
+Known validation boundary: locally signed GitHub webhook handling is tested, but a webhook delivered by a real GitHub App has not been verified because a public callback URL and production GitHub credentials were not available in the test environment.
 
 ## How AutoCyber Works
 
@@ -65,7 +85,9 @@ Stage status:
 7. Approved proposals can be applied to a temporary copy and verified.
 8. Verified remediation can create a GitHub pull request in the current token-mode prototype.
 9. GitHub webhooks can queue monitoring scans for push and pull request events.
-10. Repository profile and scan history feed future security memory.
+10. Finding lifecycle and remediation decisions are remembered per repository.
+11. Memory affects future proposal context, priority ranking, suppression, and notifications.
+12. Evidence packs summarize current risk, decisions, remediation history, limitations, and next actions without exposing secrets.
 
 ## Tech Stack
 
@@ -86,6 +108,8 @@ Backend and app services:
 - Development persistence abstraction for prototype flows
 - GitHub webhook signature validation
 - Queued scan-job abstraction for continuous monitoring
+- Finding lifecycle and repository-scoped decision memory
+- Deterministic priority scoring and redacted evidence-pack generation
 
 Security and remediation:
 
@@ -225,7 +249,7 @@ Do not use a broad personal token or a production repository for early prototype
 
 ### 11. Try Monitoring Flows
 
-Stage 6 monitoring is in progress. Current pieces include:
+The Stage 6 development monitoring flow includes:
 
 - GitHub App callback route: `/api/github-app/callback`
 - GitHub webhook route: `/api/webhooks/github`
@@ -244,6 +268,19 @@ For webhook testing:
 5. Use `AUTOCYBER_WEBHOOK_EXECUTION_MODE=queued` and call `POST /api/scans/process-queue` with `X-AutoCyber-Worker-Secret` only when testing the explicit queue-worker path.
 6. Review monitoring history and notifications in the UI.
 
+### 12. Use Security Memory
+
+After a scan:
+
+1. Review a finding and its lifecycle information, including first seen, last seen, and occurrence count.
+2. Mark a confirmed false positive when appropriate. Matching findings in the same repository will be suppressed in later scans.
+3. Approve, reject, or choose a manual fix for a proposal. AutoCyber records the decision for future proposal and priority context.
+4. Run and verify an approved remediation to record the successful remediation result.
+5. Review the findings and scan-history pages to see memory-aware priority and notification behavior.
+6. Generate an evidence pack from the scan-history workflow for a redacted, copyable status summary.
+
+Memory is repository-scoped. A decision made for one repository must not silently suppress or change findings in another repository.
+
 ## API Routes
 
 Current app routes include:
@@ -254,11 +291,146 @@ Current app routes include:
 - `POST /api/scans/retry`: retry a failed scan job
 - `POST /api/scans/process-queue`: process queued monitoring scan jobs behind a worker secret
 - `POST /api/fix-proposals`: generate a fix proposal from a normalized finding
+- `POST /api/fix-proposals/decision`: record an accepted, rejected, advisory, or manual-fix decision
+- `POST /api/findings/false-positive`: mark and remember a repository-scoped false positive
+- `POST /api/evidence-pack`: generate a redacted security evidence pack
 - `POST /api/remediations`: apply and verify an approved proposal in a local remediation flow
 - `POST /api/github-prs`: create a PR from an approved and verified remediation execution
 - `GET /api/github-app/callback`: record GitHub App installation repositories
 - `POST /api/webhooks/github`: validate and process GitHub push or pull request webhooks
 - `POST /api/notifications`: mark notifications read or dismissed
+
+## Docker, CI/CD, And AWS
+
+The recommended first production architecture is:
+
+```txt
+Developer -> GitHub -> GitHub Actions -> Amazon ECR -> Amazon ECS Fargate
+                                                        |
+                                         ALB + HTTPS + CloudWatch
+                                                        |
+                                  Supabase Postgres + Secrets Manager
+```
+
+Use one immutable container image for both staging and production. Inject environment-specific configuration at runtime; never bake `.env.local`, API keys, database URLs, GitHub private keys, or webhook secrets into the image.
+
+### Phase 1: Production Dockerization - Implemented
+
+Build the image without server secrets:
+
+```bash
+docker build --tag autocyber:local .
+```
+
+When Clerk is enabled, its publishable browser key must be available during the Next.js build. It is intentionally public; do not pass `CLERK_SECRET_KEY` or any other server secret as a build argument.
+
+```bash
+docker build \
+  --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_publishable_key \
+  --tag autocyber:local .
+```
+
+Run a local in-memory container:
+
+```bash
+docker run --rm \
+  --publish 3000:3000 \
+  --env AUTOCYBER_PERSISTENCE=dev \
+  autocyber:local
+```
+
+For durable operation, supply runtime values from a private environment file or secret manager:
+
+```bash
+docker run --rm \
+  --publish 3000:3000 \
+  --env-file .env.production.local \
+  autocyber:local
+```
+
+Required durable-persistence values are `AUTOCYBER_PERSISTENCE=database` and either `DATABASE_URL` or `SUPABASE_DATABASE_URL`. Apply the included migrations before starting database mode. Add Clerk, GitHub App, webhook, queue-worker, or token values only for the corresponding feature.
+
+Verify liveness:
+
+```bash
+curl --fail http://localhost:3000/api/health
+```
+
+The runtime image:
+
+- uses pinned Node.js 22 and the repository-pinned pnpm version during builds
+- runs as the unprivileged `node` user
+- includes `git` and CA certificates for HTTPS repository cloning
+- stores unique clone sessions under `/tmp/autocyber-scans`
+- removes clone sessions after successful scans, clone failures, and scanner exceptions
+- prunes clone sessions abandoned for more than 24 hours
+- contains no local environment files, private Markdown, keys, tests, or scanner fixtures
+
+Public and GitHub App repository scans work without mounting source code. Local-path scans require explicitly mounting the target repository into the container. Docker does not replace Supabase, credentials, webhook delivery, or durable background-job processing.
+
+### Phase 2: Add Continuous Integration
+
+Create `.github/workflows/ci.yml` for pull requests and pushes:
+
+1. Check out the repository.
+2. Install the pinned Node.js and pnpm versions.
+3. Run `pnpm install --frozen-lockfile`.
+4. Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build`.
+5. Build the production Docker image to catch packaging failures.
+6. Add a container vulnerability scan and fail on the agreed severity threshold.
+7. Require the CI workflow before a pull request can merge.
+
+CI must use fake or isolated test values. It must never receive production application secrets merely to compile or run unit tests.
+
+### Phase 3: Create AWS Infrastructure
+
+Use AWS CDK with TypeScript in an `infra/aws` workspace so infrastructure changes are reviewed with application code.
+
+1. Create separate staging and production environments.
+2. Create an Amazon ECR repository for immutable AutoCyber images tagged with the Git commit SHA.
+3. Create an ECS cluster and Fargate service for the Next.js web container.
+4. Put an Application Load Balancer in front of the service and connect `/api/health` to its target-group health check.
+5. Add an ACM TLS certificate and Route 53 DNS record for HTTPS.
+6. Store runtime secrets in AWS Secrets Manager and grant the ECS task role access only to the secrets it needs.
+7. Send application logs to CloudWatch and add alarms for unhealthy tasks, repeated restarts, high error rates, CPU, and memory.
+8. Keep Supabase Postgres as the first production database to avoid migrating the database and application platform at the same time.
+9. Give scanner tasks Fargate ephemeral storage for temporary repository clones. Do not use container storage as durable application state.
+10. Split queue processing into a dedicated ECS worker service before relying on continuous production monitoring. The current protected HTTP worker route is a prototype boundary, not the final worker architecture.
+
+Start staging with one web task and one worker task. Add multi-instance caching or shared cache coordination before scaling the Next.js service horizontally if the application begins relying on server-side revalidation caches.
+
+### Phase 4: Add Continuous Deployment
+
+Create a deployment workflow with this sequence:
+
+```txt
+Pull request -> CI checks
+Merge to main -> Build image -> Push commit-SHA tag to ECR
+              -> Deploy staging ECS task definition
+              -> Health and smoke checks
+              -> Manual production approval
+              -> Deploy the same image digest to production
+```
+
+1. Connect GitHub Actions to AWS using OpenID Connect and short-lived role credentials. Do not create long-lived AWS access keys in GitHub.
+2. Restrict the AWS role trust policy to this GitHub organization, repository, branch, and protected deployment environment.
+3. Give the CI role ECR push permission and only the ECS deployment permissions it needs.
+4. Deploy a new task definition revision and wait for ECS service stability.
+5. Run smoke checks against `/api/health` and a safe, non-customer test flow.
+6. Protect production with GitHub Environment approval.
+7. Roll back by redeploying the previous healthy task definition and image digest.
+
+### What A Fresh Clone Can Do
+
+A fresh clone can run the same code and local development functions after dependencies are installed and the operator supplies their own environment values. It cannot inherit this developer's secrets, GitHub App installation, Supabase data, webhook URL, or AWS resources. Production-equivalent behavior also requires:
+
+- applying the included database migrations to a Supabase Postgres database
+- configuring Clerk and GitHub App credentials
+- configuring signed GitHub webhook delivery
+- providing durable queue processing
+- deploying the web and worker containers with sufficient temporary scanner storage
+
+This separation is intentional: source code is public and reproducible, while credentials, customer data, and deployed infrastructure remain private.
 
 ## Scanner Coverage
 
