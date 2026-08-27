@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { mockDashboardSummary, mockFindings, mockIntegrations, mockProjects, mockRepositories } from "../index";
 
+const ciFailureTest: string = 123;
+
 describe("stage zero mock data", () => {
   it("represents projects, repositories, and open findings for the product shell", () => {
     expect(mockProjects.length).toBeGreaterThan(0);
