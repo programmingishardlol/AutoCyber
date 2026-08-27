@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FixProposal } from "@autocyber/core";
 import { getPersistenceStore } from "../../../lib/persistence/store";
@@ -79,7 +80,7 @@ describe("local remediation API route", () => {
     process.env.AUTOCYBER_PERSISTENCE = "dev";
     globalThis.__autocyberPersistenceStore = undefined;
     const repositoryPath = mkdtempSync(
-      "/private/tmp/autocyber-remediation-route-test-",
+      join(tmpdir(), "autocyber-remediation-route-test-"),
     );
 
     try {
@@ -140,7 +141,7 @@ describe("local remediation API route", () => {
     process.env.AUTOCYBER_PERSISTENCE = "dev";
     globalThis.__autocyberPersistenceStore = undefined;
     const repositoryPath = mkdtempSync(
-      "/private/tmp/autocyber-remediation-success-test-",
+      join(tmpdir(), "autocyber-remediation-success-test-"),
     );
 
     try {
