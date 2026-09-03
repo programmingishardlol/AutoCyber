@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - codex/docker-cicd-aws-foundation
+      - codex/stage-7-5c-aws-ecr
 
 permissions:
   contents: read
@@ -80,8 +81,16 @@ jobs:
 
   container-security:
     name: Container Security
+    needs:
+      - quality
+      - secret-scan
+    if: >-
+      github.event_name != 'push' ||
+      github.ref != 'refs/heads/codex/docker-cicd-aws-foundation'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -89,13 +98,13 @@ jobs:
           persist-credentials: false
 
       - name: Build production container
-        run: docker build --tag autocyber:ci .
+        run: docker build --tag autocyber:${{ github.sha }} .
 
       # Initial visibility policy: report fixable serious library vulnerabilities without blocking.
       - name: Report serious application dependency vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: autocyber:ci
+          image-ref: autocyber:${{ github.sha }}
           scan-type: image
           scanners: vuln
           vuln-type: library
@@ -109,7 +118,7 @@ jobs:
       - name: Enforce serious operating system vulnerability policy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: autocyber:ci
+          image-ref: autocyber:${{ github.sha }}
           scan-type: image
           scanners: vuln
           vuln-type: os
@@ -118,3 +127,73 @@ jobs:
           format: table
           exit-code: "1"
           cache: true
+
+  container-security-and-publish:
+    name: Container Security and Publish ECR
+    needs:
+      - quality
+      - secret-scan
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/codex/docker-cicd-aws-foundation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build production container
+        run: docker build --tag autocyber:${{ github.sha }} .
+
+      # Initial visibility policy: report fixable serious library vulnerabilities without blocking.
+      - name: Report serious application dependency vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: autocyber:${{ github.sha }}
+          scan-type: image
+          scanners: vuln
+          vuln-type: library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "0"
+          cache: true
+
+      # Initial blocking policy: fixable HIGH or CRITICAL OS vulnerabilities fail CI.
+      - name: Enforce serious operating system vulnerability policy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: autocyber:${{ github.sha }}
+          scan-type: image
+          scanners: vuln
+          vuln-type: os
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"
+          cache: true
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+        with:
+          mask-password: true
+
+      - name: Tag and push scanned image
+        env:
+          LOCAL_IMAGE: autocyber:${{ github.sha }}
+          ECR_IMAGE: ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          docker tag "$LOCAL_IMAGE" "$ECR_IMAGE"
+          docker push "$ECR_IMAGE"
