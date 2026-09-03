@@ -86,10 +86,7 @@ jobs:
       - secret-scan
     if: >-
       github.event_name != 'push' ||
-      (
-        github.ref != 'refs/heads/codex/stage-7-5c-aws-ecr' &&
-        github.ref != 'refs/heads/codex/docker-cicd-aws-foundation'
-      )
+      github.ref != 'refs/heads/codex/docker-cicd-aws-foundation'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -138,10 +135,7 @@ jobs:
       - secret-scan
     if: >-
       github.event_name == 'push' &&
-      (
-        github.ref == 'refs/heads/codex/stage-7-5c-aws-ecr' ||
-        github.ref == 'refs/heads/codex/docker-cicd-aws-foundation'
-      )
+      github.ref == 'refs/heads/codex/docker-cicd-aws-foundation'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
